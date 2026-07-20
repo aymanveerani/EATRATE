@@ -42,8 +42,6 @@ CREATE TABLE IF NOT EXISTS restaurants (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_restaurants_osm_id ON restaurants(osm_id) WHERE osm_id IS NOT NULL;
-
 CREATE TABLE IF NOT EXISTS business_claims (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     restaurant_id INTEGER NOT NULL UNIQUE,
@@ -120,8 +118,8 @@ CREATE TABLE IF NOT EXISTS reports (
 );
 """
 
-# Columns added after the original rewards table was created. CREATE TABLE IF
-# NOT EXISTS won't retrofit these onto an existing eatrate.db, so migrate
+# Columns added after the original tables were created. CREATE TABLE IF NOT
+# EXISTS won't retrofit these onto an existing eatrate.db, so migrate
 # explicitly and ignore "duplicate column" if it's already been applied.
 MIGRATIONS = [
     "ALTER TABLE rewards ADD COLUMN manual_review_required INTEGER NOT NULL DEFAULT 0",
@@ -130,6 +128,14 @@ MIGRATIONS = [
     "ALTER TABLE restaurants ADD COLUMN lng REAL",
     "ALTER TABLE restaurants ADD COLUMN osm_id TEXT",
     "ALTER TABLE restaurants ADD COLUMN source TEXT NOT NULL DEFAULT 'user'",
+]
+
+# Must run *after* MIGRATIONS: this index references restaurants.osm_id,
+# which doesn't exist yet on a pre-existing database until the ALTER TABLE
+# above has run. Running it as part of SCHEMA's executescript (before
+# migrations) crashes on any database that predates the osm_id column.
+POST_MIGRATION_STATEMENTS = [
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_restaurants_osm_id ON restaurants(osm_id) WHERE osm_id IS NOT NULL",
 ]
 
 
@@ -151,5 +157,7 @@ def init_db():
         except sqlite3.OperationalError as e:
             if "duplicate column" not in str(e).lower():
                 raise
+    for statement in POST_MIGRATION_STATEMENTS:
+        conn.execute(statement)
     conn.commit()
     conn.close()
