@@ -45,10 +45,13 @@
           📸 Share your visit
         </a>
 
+        ${ftcBanner()}
+
         ${postsHtml}
       `;
 
       wireCheerButtons(document.getElementById("content"));
+      initReportModal(document.getElementById("content"));
     }
 
     (async () => {

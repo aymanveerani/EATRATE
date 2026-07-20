@@ -81,6 +81,48 @@ registrar; DNS propagation usually takes a few minutes to a few hours.
 - The reward amount ($10) and the trigger count (5) are constants in
   [server/app.py](server/app.py) (`REWARD_EVERY_N_POSTS`, `REWARD_AMOUNT_CENTS`).
 
+## Trust & safety (pilot compliance)
+
+Added for the pilot launch, since reviewers are being paid to post:
+
+- **Rate limiting.** Two independent checks per account, both in `create_post()`
+  ([server/app.py](server/app.py)): no more than one post per hour (blocks scripted/bot-speed
+  posting), and no more than one post per rolling 24 hours (blocks farming toward the 5-post
+  reward). Violating either returns `429` with a message telling the user when they can try again.
+- **Manual review on the first 30 redemptions.** The first `MANUAL_REVIEW_LIMIT` (30, in
+  [server/admin.py](server/admin.py)) reward redemptions platform-wide go into an `under_review`
+  state instead of instantly issuing a gift card — `POST /api/rewards/:id/redeem` returns
+  `{"under_review": true}` and no code. An operator approves or rejects each one from
+  [`/admin.html`](static/admin.html), gated by the `ADMIN_SECRET` env var (sent as an
+  `X-Admin-Secret` header, checked with `hmac.compare_digest`). The 30-count check runs inside a
+  `BEGIN IMMEDIATE` transaction so two simultaneous redemptions can't both slip in as slot #30.
+  Once the 30 are used up, redemption goes back to instant auto-issuance.
+- **Report flag.** Every post has a 🚩 button that opens a report form
+  (`POST /api/posts/:id/report`). Every report is stored in the `reports` table regardless of
+  whether email is configured, and also triggers a notification via
+  [server/notify.py](server/notify.py) — simulated (logged to stdout) by default, or a real email
+  if you set `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, and `REPORT_EMAIL_TO`. Open
+  reports also show up in the admin panel with a "mark resolved" button.
+- **FTC disclosure.** A persistent banner ([`ftcBanner()`](static/js/api.js)) reading *"Reviews on
+  EatRate may be incentivized: every 5th review a user posts earns them a $10 gift card,
+  regardless of the rating given"* appears above the feed (`index.html`) and above every
+  restaurant's post list (`restaurant.html`). The "regardless of rating" phrasing is what keeps
+  the reward compliant with the FTC's Consumer Review Rule — the rule prohibits tying an incentive
+  to the *sentiment* of a review, not incentives themselves, and nothing in this app's reward
+  logic looks at `rating` before granting a reward.
+
+**New environment variables** (all optional — the app runs in a fully simulated/no-op mode for
+each until you set them):
+
+| Variable | Purpose | If unset |
+|---|---|---|
+| `ADMIN_SECRET` | Unlocks `/admin.html` and the `/api/admin/*` endpoints | Admin panel returns `503`, refuses all access |
+| `REPORT_EMAIL_TO` | Where report notifications get sent | — |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASSWORD` | Credentials for sending that email | Reports are logged to stdout instead of emailed (still saved in the DB either way) |
+
+Set `ADMIN_SECRET` to something long and random — treat it like a password, don't commit it. On
+Railway: service → Variables → add it there. Locally: `ADMIN_SECRET=... python3 run.py`.
+
 ## Gift cards: simulated by default
 
 [server/giftcards.py](server/giftcards.py) issues a `SIM-XXXXXXXX` code and never calls out to a
@@ -152,15 +194,21 @@ project root locally, a mounted volume in production — and are gitignored.)
 | GET    | `/api/me`                         | ✓    | |
 | GET    | `/api/restaurants`                | –    | list with avg rating + post count |
 | GET    | `/api/restaurants/:id`            | ✓    | detail + all posts (photo grid) |
-| POST   | `/api/posts`                      | ✓    | `{photo: data-url, restaurant_name, rating: 0-10, caption?}` — restaurant is found-or-created by name |
+| POST   | `/api/posts`                      | ✓    | `{photo: data-url, restaurant_name, rating: 0-10, caption?}` — restaurant is found-or-created by name; `429` if rate-limited |
 | POST   | `/api/posts/:id/cheer`            | ✓    | toggles a cheer; 403 if you're not the author or their friend |
+| POST   | `/api/posts/:id/report`           | ✓    | `{reason?}` — flags a post, notifies the operator |
 | GET    | `/api/feed`                       | ✓    | posts from you + your friends, newest first |
 | GET    | `/api/friends`                    | ✓    | |
 | POST   | `/api/friends`                    | ✓    | `{email}` — adds bidirectionally |
 | DELETE | `/api/friends/:id`                | ✓    | removes both directions |
-| GET    | `/api/rewards`                    | ✓    | mine, pending + redeemed |
-| POST   | `/api/rewards/:id/redeem`         | ✓    | `{restaurant_id}` |
+| GET    | `/api/rewards`                    | ✓    | mine, includes `review_status`: `pending` / `under_review` / `redeemed` / `rejected` |
+| POST   | `/api/rewards/:id/redeem`         | ✓    | `{restaurant_id}` — returns `{under_review: true}` instead of a gift card for the first 30 platform-wide |
 | GET    | `/api/profile`                    | ✓    | my posts + rewards + friend count + progress to next reward |
+| GET    | `/api/admin/redemptions`          | admin secret | pending manual-review redemptions + how many of the 30 slots are used |
+| POST   | `/api/admin/redemptions/:id/approve` | admin secret | issues the gift card, marks `redeemed` |
+| POST   | `/api/admin/redemptions/:id/reject`  | admin secret | marks `rejected`, no card issued |
+| GET    | `/api/admin/reports`              | admin secret | open reports with post + reporter context |
+| POST   | `/api/admin/reports/:id/resolve`  | admin secret | marks a report resolved |
 
 ## Restaurants paying, without ads
 

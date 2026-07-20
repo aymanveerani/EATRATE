@@ -79,10 +79,32 @@ CREATE TABLE IF NOT EXISTS rewards (
     trigger_post_count INTEGER NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     redeemed_at TEXT,
+    manual_review_required INTEGER NOT NULL DEFAULT 0,
+    manual_review_status TEXT,
     FOREIGN KEY (user_id) REFERENCES users(id),
     FOREIGN KEY (restaurant_id) REFERENCES restaurants(id)
 );
+
+CREATE TABLE IF NOT EXISTS reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id INTEGER NOT NULL,
+    reporter_user_id INTEGER NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at TEXT,
+    FOREIGN KEY (post_id) REFERENCES posts(id),
+    FOREIGN KEY (reporter_user_id) REFERENCES users(id)
+);
 """
+
+# Columns added after the original rewards table was created. CREATE TABLE IF
+# NOT EXISTS won't retrofit these onto an existing eatrate.db, so migrate
+# explicitly and ignore "duplicate column" if it's already been applied.
+MIGRATIONS = [
+    "ALTER TABLE rewards ADD COLUMN manual_review_required INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE rewards ADD COLUMN manual_review_status TEXT",
+]
 
 
 def get_connection():
@@ -97,5 +119,11 @@ def init_db():
     os.makedirs(UPLOADS_DIR, exist_ok=True)
     conn = get_connection()
     conn.executescript(SCHEMA)
+    for migration in MIGRATIONS:
+        try:
+            conn.execute(migration)
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e).lower():
+                raise
     conn.commit()
     conn.close()

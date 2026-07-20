@@ -471,6 +471,34 @@ nav.tabbar .icon { font-size: 20px; }
   color: var(--accent);
 }
 
+.report-btn {
+  border: 1px solid var(--border);
+  background: var(--card-2);
+  border-radius: 999px;
+  width: 34px;
+  height: 34px;
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+
+.report-btn:active { color: var(--danger); border-color: var(--danger); }
+
+.ftc-banner {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  background: var(--card-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
 .photo-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

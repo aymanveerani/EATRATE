@@ -1,21 +1,31 @@
+import hmac
 import json
 import mimetypes
 import os
 import re
 import socketserver
+from datetime import datetime
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
-from server import auth
+from server import admin, auth
 from server.db import get_connection, init_db, UPLOADS_DIR
 from server.giftcards import issue_gift_card
+from server.notify import notify_report
 from server.photos import PhotoError, save_photo
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
 REWARD_EVERY_N_POSTS = 5
 REWARD_AMOUNT_CENTS = 1000
+
+# Anti-farming: a bot-speed throttle (1 hour) and a hard daily cap (rolling
+# 24h), both per account. The 24h cap subsumes the 1h one in normal use, but
+# they're kept as two independent checks with distinct messages so the
+# 1-hour throttle still holds even if the daily cap is ever loosened.
+MIN_SECONDS_BETWEEN_POSTS = 60 * 60
+MAX_POSTS_WINDOW_SECONDS = 24 * 60 * 60
 
 ROUTES = []
 
@@ -67,9 +77,18 @@ def public_post(row):
 
 def public_reward(row):
     keys = row.keys()
+    if row["status"] == "redeemed":
+        review_status = "redeemed"
+    elif row["status"] == "rejected":
+        review_status = "rejected"
+    elif row["manual_review_status"] == "pending":
+        review_status = "under_review"
+    else:
+        review_status = "pending"
     return {
         "id": row["id"],
         "status": row["status"],
+        "review_status": review_status,
         "amount_cents": row["amount_cents"],
         "restaurant_id": row["restaurant_id"],
         "restaurant_name": row["restaurant_name"] if "restaurant_name" in keys else None,
@@ -264,12 +283,28 @@ def create_post(ctx):
 
     caption = (body.get("caption") or "").strip()[:2000]
 
+    conn = get_connection()
+
+    last_post = conn.execute(
+        "SELECT created_at FROM posts WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+        (user["id"],),
+    ).fetchone()
+    if last_post:
+        last_time = datetime.fromisoformat(last_post["created_at"].replace(" ", "T"))
+        elapsed = (datetime.utcnow() - last_time).total_seconds()
+        if elapsed < MIN_SECONDS_BETWEEN_POSTS:
+            conn.close()
+            raise ApiError(429, "You're posting too fast — please wait at least an hour between posts.")
+        if elapsed < MAX_POSTS_WINDOW_SECONDS:
+            conn.close()
+            raise ApiError(429, "You can only share one post per day during our pilot. Come back tomorrow!")
+
     try:
         photo_path = save_photo(body.get("photo"))
     except PhotoError as e:
+        conn.close()
         raise ApiError(400, str(e))
 
-    conn = get_connection()
     restaurant_id = find_or_create_restaurant(conn, body.get("restaurant_name"))
 
     conn.execute(
@@ -329,6 +364,29 @@ def toggle_cheer(ctx, post_id):
     ).fetchone()["c"]
     conn.close()
     ctx.send_json(HTTPStatus.OK, {"cheered": cheered, "cheers_count": count})
+
+
+@route("POST", r"/api/posts/(?P<post_id>\d+)/report")
+def report_post(ctx, post_id):
+    user = ctx.require_user()
+    body = ctx.json_body()
+    reason = (body.get("reason") or "").strip()[:2000]
+
+    conn = get_connection()
+    post = conn.execute("SELECT id FROM posts WHERE id = ?", (post_id,)).fetchone()
+    if post is None:
+        conn.close()
+        raise ApiError(404, "Post not found.")
+
+    conn.execute(
+        "INSERT INTO reports (post_id, reporter_user_id, reason) VALUES (?, ?, ?)",
+        (post_id, user["id"], reason),
+    )
+    conn.commit()
+    conn.close()
+
+    notify_report(post_id, user["email"], reason)
+    ctx.send_json(HTTPStatus.CREATED, {"ok": True})
 
 
 # ---------------------------------------------------------------------------
@@ -483,13 +541,47 @@ def redeem_reward(ctx, reward_id):
         conn.close()
         raise ApiError(404, "Restaurant not found.")
 
-    card = issue_gift_card(restaurant["name"], reward["amount_cents"])
-    conn.execute(
-        "UPDATE rewards SET status = 'redeemed', restaurant_id = ?, gift_code = ?, "
-        "redeemed_at = datetime('now') WHERE id = ?",
-        (restaurant_id, card["code"], reward_id),
-    )
-    conn.commit()
+    # First MANUAL_REVIEW_LIMIT redemptions platform-wide are held for a human
+    # to approve before the card is issued — the pilot's fraud check. BEGIN
+    # IMMEDIATE serializes concurrent redeem calls so two requests can't both
+    # slip in as, say, the 30th slot.
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        reviewed_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM rewards WHERE manual_review_required = 1"
+        ).fetchone()["c"]
+
+        if reviewed_count < admin.MANUAL_REVIEW_LIMIT:
+            conn.execute(
+                "UPDATE rewards SET manual_review_required = 1, manual_review_status = 'pending', "
+                "restaurant_id = ? WHERE id = ?",
+                (restaurant_id, reward_id),
+            )
+            conn.commit()
+            updated = conn.execute(
+                """
+                SELECT rewards.*, restaurants.name AS restaurant_name
+                FROM rewards LEFT JOIN restaurants ON restaurants.id = rewards.restaurant_id
+                WHERE rewards.id = ?
+                """,
+                (reward_id,),
+            ).fetchone()
+            conn.close()
+            ctx.send_json(HTTPStatus.OK, {"reward": public_reward(updated), "under_review": True})
+            return
+
+        card = issue_gift_card(restaurant["name"], reward["amount_cents"])
+        conn.execute(
+            "UPDATE rewards SET status = 'redeemed', restaurant_id = ?, gift_code = ?, "
+            "redeemed_at = datetime('now') WHERE id = ?",
+            (restaurant_id, card["code"], reward_id),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        conn.close()
+        raise
+
     updated = conn.execute(
         """
         SELECT rewards.*, restaurants.name AS restaurant_name
@@ -500,6 +592,146 @@ def redeem_reward(ctx, reward_id):
     ).fetchone()
     conn.close()
     ctx.send_json(HTTPStatus.OK, {"reward": public_reward(updated), "gift_card": card})
+
+
+# ---------------------------------------------------------------------------
+# Admin (pilot fraud review — gated by the ADMIN_SECRET env var, not by user
+# login, since this is an operator tool rather than a user-facing feature)
+# ---------------------------------------------------------------------------
+
+def require_admin(ctx):
+    if not admin.ADMIN_SECRET:
+        raise ApiError(503, "Admin panel is not configured (ADMIN_SECRET not set on the server).")
+    provided = ctx.handler.headers.get("X-Admin-Secret", "")
+    if not hmac.compare_digest(provided, admin.ADMIN_SECRET):
+        raise ApiError(401, "Invalid admin secret.")
+
+
+@route("GET", r"/api/admin/redemptions")
+def admin_list_redemptions(ctx):
+    require_admin(ctx)
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT rewards.*, users.name AS user_name, users.email AS user_email,
+               restaurants.name AS restaurant_name
+        FROM rewards
+        JOIN users ON users.id = rewards.user_id
+        LEFT JOIN restaurants ON restaurants.id = rewards.restaurant_id
+        WHERE rewards.manual_review_required = 1
+        ORDER BY rewards.created_at DESC
+        """
+    ).fetchall()
+    used = conn.execute(
+        "SELECT COUNT(*) AS c FROM rewards WHERE manual_review_required = 1"
+    ).fetchone()["c"]
+    conn.close()
+    out = []
+    for r in rows:
+        item = public_reward(r)
+        item["user_name"] = r["user_name"]
+        item["user_email"] = r["user_email"]
+        out.append(item)
+    ctx.send_json(
+        HTTPStatus.OK,
+        {"redemptions": out, "manual_review_used": used, "manual_review_limit": admin.MANUAL_REVIEW_LIMIT},
+    )
+
+
+@route("POST", r"/api/admin/redemptions/(?P<reward_id>\d+)/approve")
+def admin_approve_redemption(ctx, reward_id):
+    require_admin(ctx)
+    conn = get_connection()
+    reward = conn.execute("SELECT * FROM rewards WHERE id = ?", (reward_id,)).fetchone()
+    if reward is None:
+        conn.close()
+        raise ApiError(404, "Reward not found.")
+    if reward["manual_review_status"] != "pending":
+        conn.close()
+        raise ApiError(409, "This redemption isn't awaiting review.")
+
+    restaurant = conn.execute(
+        "SELECT * FROM restaurants WHERE id = ?", (reward["restaurant_id"],)
+    ).fetchone()
+    card = issue_gift_card(restaurant["name"], reward["amount_cents"])
+    conn.execute(
+        "UPDATE rewards SET status = 'redeemed', manual_review_status = 'approved', "
+        "gift_code = ?, redeemed_at = datetime('now') WHERE id = ?",
+        (card["code"], reward_id),
+    )
+    conn.commit()
+    conn.close()
+    ctx.send_json(HTTPStatus.OK, {"ok": True, "gift_card": card})
+
+
+@route("POST", r"/api/admin/redemptions/(?P<reward_id>\d+)/reject")
+def admin_reject_redemption(ctx, reward_id):
+    require_admin(ctx)
+    conn = get_connection()
+    reward = conn.execute("SELECT * FROM rewards WHERE id = ?", (reward_id,)).fetchone()
+    if reward is None:
+        conn.close()
+        raise ApiError(404, "Reward not found.")
+    if reward["manual_review_status"] != "pending":
+        conn.close()
+        raise ApiError(409, "This redemption isn't awaiting review.")
+
+    conn.execute(
+        "UPDATE rewards SET status = 'rejected', manual_review_status = 'rejected' WHERE id = ?",
+        (reward_id,),
+    )
+    conn.commit()
+    conn.close()
+    ctx.send_json(HTTPStatus.OK, {"ok": True})
+
+
+@route("GET", r"/api/admin/reports")
+def admin_list_reports(ctx):
+    require_admin(ctx)
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT reports.*, users.name AS reporter_name, users.email AS reporter_email,
+               posts.photo_path AS post_photo_path, posts.caption AS post_caption,
+               posts.rating AS post_rating, post_authors.name AS post_author_name
+        FROM reports
+        JOIN users ON users.id = reports.reporter_user_id
+        JOIN posts ON posts.id = reports.post_id
+        JOIN users AS post_authors ON post_authors.id = posts.user_id
+        WHERE reports.status = 'open'
+        ORDER BY reports.created_at DESC
+        """
+    ).fetchall()
+    conn.close()
+    out = [
+        {
+            "id": r["id"],
+            "post_id": r["post_id"],
+            "reason": r["reason"],
+            "created_at": r["created_at"],
+            "reporter_name": r["reporter_name"],
+            "reporter_email": r["reporter_email"],
+            "post_photo_url": "/" + r["post_photo_path"],
+            "post_caption": r["post_caption"],
+            "post_rating": r["post_rating"],
+            "post_author_name": r["post_author_name"],
+        }
+        for r in rows
+    ]
+    ctx.send_json(HTTPStatus.OK, {"reports": out})
+
+
+@route("POST", r"/api/admin/reports/(?P<report_id>\d+)/resolve")
+def admin_resolve_report(ctx, report_id):
+    require_admin(ctx)
+    conn = get_connection()
+    conn.execute(
+        "UPDATE reports SET status = 'resolved', resolved_at = datetime('now') WHERE id = ?",
+        (report_id,),
+    )
+    conn.commit()
+    conn.close()
+    ctx.send_json(HTTPStatus.OK, {"ok": True})
 
 
 # ---------------------------------------------------------------------------

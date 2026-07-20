@@ -55,43 +55,72 @@
       document.getElementById("redeem-modal").style.display = "block";
     }
 
-    async function loadRewards() {
+    async function loadRewards(feedbackMessage) {
       const { rewards } = await api.get("/api/rewards");
       const list = document.getElementById("list");
+      const feedbackHtml = feedbackMessage
+        ? `<div class="success-msg" style="margin-bottom:12px;">${escapeHtml(feedbackMessage)}</div>`
+        : "";
+
       if (rewards.length === 0) {
         list.className = "empty-state";
-        list.innerHTML = "No rewards yet.<br/>Share 5 posts to earn your first $10 gift card.";
+        list.innerHTML = feedbackHtml + "No rewards yet.<br/>Share 5 posts to earn your first $10 gift card.";
         return;
       }
       list.className = "";
-      list.innerHTML = rewards
-        .map((r) => {
-          if (r.status === "pending") {
-            return `
-              <div class="card reward-card">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                  <div>
-                    <div class="amount">${centsToDollars(r.amount_cents)}</div>
-                    <span class="badge pending">Ready to redeem</span>
+      list.innerHTML =
+        feedbackHtml +
+        rewards
+          .map((r) => {
+            if (r.review_status === "pending") {
+              return `
+                <div class="card reward-card">
+                  <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div>
+                      <div class="amount">${centsToDollars(r.amount_cents)}</div>
+                      <span class="badge pending">Ready to redeem</span>
+                    </div>
+                    <button class="primary" onclick="openModal(${r.id})">Redeem</button>
                   </div>
-                  <button class="primary" onclick="openModal(${r.id})">Redeem</button>
                 </div>
+              `;
+            }
+            if (r.review_status === "under_review") {
+              return `
+                <div class="card">
+                  <div style="font-weight:700;">${centsToDollars(r.amount_cents)}${r.restaurant_name ? " · " + escapeHtml(r.restaurant_name) : ""}</div>
+                  <span class="badge pending">Under review</span>
+                  <div style="color:var(--muted); font-size:13px; margin-top:8px;">
+                    During our pilot, redemptions are manually checked before the card is issued.
+                    You'll see your gift code here once it's approved.
+                  </div>
+                </div>
+              `;
+            }
+            if (r.review_status === "rejected") {
+              return `
+                <div class="card">
+                  <div style="font-weight:700;">${centsToDollars(r.amount_cents)}</div>
+                  <span class="badge" style="background:var(--danger-soft); color:var(--danger);">Not approved</span>
+                  <div style="color:var(--muted); font-size:13px; margin-top:8px;">
+                    This redemption wasn't approved. Contact us if you think this is a mistake.
+                  </div>
+                </div>
+              `;
+            }
+            return `
+              <div class="card">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                  <div>
+                    <div style="font-weight:700;">${centsToDollars(r.amount_cents)} · ${escapeHtml(r.restaurant_name || "")}</div>
+                    <span class="badge redeemed">Redeemed</span>
+                  </div>
+                </div>
+                <div class="gift-code">${escapeHtml(r.gift_code)}</div>
               </div>
             `;
-          }
-          return `
-            <div class="card">
-              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                <div>
-                  <div style="font-weight:700;">${centsToDollars(r.amount_cents)} · ${escapeHtml(r.restaurant_name || "")}</div>
-                  <span class="badge redeemed">Redeemed</span>
-                </div>
-              </div>
-              <div class="gift-code">${escapeHtml(r.gift_code)}</div>
-            </div>
-          `;
-        })
-        .join("");
+          })
+          .join("");
     }
 
     document.getElementById("cancel-redeem").addEventListener("click", closeModal);
@@ -105,9 +134,13 @@
       btn.textContent = "Redeeming…";
       try {
         const restaurantId = document.getElementById("restaurant-select").value;
-        await api.post(`/api/rewards/${activeRewardId}/redeem`, { restaurant_id: parseInt(restaurantId, 10) });
+        const result = await api.post(`/api/rewards/${activeRewardId}/redeem`, { restaurant_id: parseInt(restaurantId, 10) });
         closeModal();
-        await loadRewards();
+        if (result.under_review) {
+          await loadRewards("Submitted! During our pilot, redemptions are manually reviewed before the gift card is issued.");
+        } else {
+          await loadRewards();
+        }
       } catch (err) {
         errorBox.textContent = err.message;
         errorBox.style.display = "block";

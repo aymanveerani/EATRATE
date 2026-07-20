@@ -100,9 +100,12 @@ function renderPostCard(post) {
         </div>
         ${post.caption ? `<div class="post-caption">${escapeHtml(post.caption)}</div>` : ""}
         <div class="post-foot">
-          <button class="cheer-btn ${post.cheered_by_me ? "active" : ""}" data-cheer-post-id="${post.id}">
-            <span>🙌</span><span class="cheer-count">${post.cheers_count}</span> Cheers
-          </button>
+          <div style="display:flex; gap:8px;">
+            <button class="cheer-btn ${post.cheered_by_me ? "active" : ""}" data-cheer-post-id="${post.id}">
+              <span>🙌</span><span class="cheer-count">${post.cheers_count}</span> Cheers
+            </button>
+            <button class="report-btn" data-report-post-id="${post.id}" title="Report this post">🚩</button>
+          </div>
           <span class="when">${timeAgo(post.created_at)}</span>
         </div>
       </div>
@@ -124,5 +127,80 @@ function wireCheerButtons(container) {
     } finally {
       btn.disabled = false;
     }
+  });
+}
+
+function ftcBanner() {
+  return `
+    <div class="ftc-banner">
+      ⚠️ Reviews on EatRate may be incentivized: every 5th review a user posts earns them a
+      $10 gift card, regardless of the rating given.
+    </div>`;
+}
+
+function initReportModal(container) {
+  if (document.getElementById("report-modal")) {
+    // Already injected on this page (e.g. wireCheerButtons + initReportModal
+    // both called on the same container) — just rewire the click delegation.
+  } else {
+    document.body.insertAdjacentHTML(
+      "beforeend",
+      `
+      <div id="report-modal-backdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:30;"></div>
+      <div id="report-modal" style="display:none; position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100%; max-width:430px; background:var(--card); border:1px solid var(--border); border-bottom:none; border-radius:18px 18px 0 0; padding:20px; z-index:31;">
+        <h3 style="margin-top:0;">Report this post</h3>
+        <p style="color:var(--muted); font-size:14px; margin-top:-8px;">Let us know what's wrong — we review every report.</p>
+        <div id="report-error" style="display:none;" class="error-msg"></div>
+        <div id="report-success" style="display:none;" class="success-msg"></div>
+        <textarea id="report-reason" placeholder="What's the issue? (optional)"></textarea>
+        <div style="display:flex; gap:8px; margin-top:12px;">
+          <button class="secondary" id="report-cancel" style="flex:1;">Cancel</button>
+          <button class="primary" id="report-submit" style="flex:1;">Submit report</button>
+        </div>
+      </div>`
+    );
+
+    const backdrop = document.getElementById("report-modal-backdrop");
+    const modal = document.getElementById("report-modal");
+    const reasonBox = document.getElementById("report-reason");
+    const errorBox = document.getElementById("report-error");
+    const successBox = document.getElementById("report-success");
+
+    const closeReportModal = () => {
+      backdrop.style.display = "none";
+      modal.style.display = "none";
+      reasonBox.value = "";
+      errorBox.style.display = "none";
+      successBox.style.display = "none";
+      window.__activeReportPostId = null;
+    };
+
+    backdrop.addEventListener("click", closeReportModal);
+    document.getElementById("report-cancel").addEventListener("click", closeReportModal);
+
+    document.getElementById("report-submit").addEventListener("click", async () => {
+      const btn = document.getElementById("report-submit");
+      errorBox.style.display = "none";
+      btn.disabled = true;
+      try {
+        await api.post(`/api/posts/${window.__activeReportPostId}/report`, { reason: reasonBox.value });
+        successBox.textContent = "Report submitted — thank you.";
+        successBox.style.display = "block";
+        setTimeout(closeReportModal, 1200);
+      } catch (err) {
+        errorBox.textContent = err.message;
+        errorBox.style.display = "block";
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+
+  container.addEventListener("click", (e) => {
+    const btn = e.target.closest(".report-btn");
+    if (!btn) return;
+    window.__activeReportPostId = btn.dataset.reportPostId;
+    document.getElementById("report-modal-backdrop").style.display = "block";
+    document.getElementById("report-modal").style.display = "block";
   });
 }

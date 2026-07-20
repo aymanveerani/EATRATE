@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Admin — EatRate</title>
+  <link rel="stylesheet" href="/css/app.css" />
+</head>
+<body>
+  <div class="app" style="padding-bottom:24px;">
+    <header class="topbar">
+      <div class="brand"><div class="mark">🍴</div><h1>Pilot admin</h1></div>
+      <button class="secondary" id="lock-btn" style="display:none; padding:8px 12px; font-size:13px;">Lock</button>
+    </header>
+    <main>
+      <div id="gate" class="card">
+        <h3 style="margin-top:0;">Enter admin secret</h3>
+        <p style="color:var(--muted); font-size:13px; margin-top:-8px;">
+          This matches the <code>ADMIN_SECRET</code> environment variable on the server. Not shared
+          with regular users — this page isn't linked from the app's nav.
+        </p>
+        <div id="gate-error" style="display:none;" class="error-msg"></div>
+        <form id="gate-form">
+          <input type="password" id="secret-input" placeholder="Admin secret" required autocomplete="off" />
+          <button type="submit" class="primary">Unlock</button>
+        </form>
+      </div>
+
+      <div id="panel" style="display:none;">
+        <div class="card">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div>
+              <div style="font-weight:700;">Manual review slots</div>
+              <div style="color:var(--muted); font-size:13px;">First 30 redemptions platform-wide need approval</div>
+            </div>
+            <div id="review-count" style="font-size:22px; font-weight:800;">—</div>
+          </div>
+        </div>
+
+        <h3>Pending redemptions</h3>
+        <div id="redemptions" class="loading">Loading…</div>
+
+        <h3 style="margin-top:24px;">Open reports</h3>
+        <div id="reports" class="loading">Loading…</div>
+      </div>
+    </main>
+  </div>
+  <script src="/js/api.js"></script>
+  <script>
+    const SECRET_KEY = "eatrate_admin_secret";
+
+    async function adminFetch(path, options) {
+      const secret = sessionStorage.getItem(SECRET_KEY);
+      const res = await fetch(path, {
+        ...options,
+        headers: { "Content-Type": "application/json", "X-Admin-Secret": secret || "" },
+      });
+      let data = {};
+      try {
+        data = await res.json();
+      } catch (e) {}
+      if (!res.ok) {
+        if (res.status === 401) sessionStorage.removeItem(SECRET_KEY);
+        throw new Error(data.error || `Request failed (${res.status})`);
+      }
+      return data;
+    }
+
+    function showGate(errorMessage) {
+      document.getElementById("gate").style.display = "block";
+      document.getElementById("panel").style.display = "none";
+      document.getElementById("lock-btn").style.display = "none";
+      const errorBox = document.getElementById("gate-error");
+      if (errorMessage) {
+        errorBox.textContent = errorMessage;
+        errorBox.style.display = "block";
+      }
+    }
+
+    function showPanel() {
+      document.getElementById("gate").style.display = "none";
+      document.getElementById("panel").style.display = "block";
+      document.getElementById("lock-btn").style.display = "block";
+    }
+
+    async function loadRedemptions() {
+      const { redemptions, manual_review_used, manual_review_limit } = await adminFetch("/api/admin/redemptions");
+      document.getElementById("review-count").textContent = `${manual_review_used} / ${manual_review_limit}`;
+
+      const pending = redemptions.filter((r) => r.review_status === "under_review");
+      const box = document.getElementById("redemptions");
+      if (pending.length === 0) {
+        box.className = "empty-state";
+        box.textContent = "No redemptions waiting on review.";
+        return;
+      }
+      box.className = "";
+      box.innerHTML = pending
+        .map(
+          (r) => `
+          <div class="card">
+            <div style="font-weight:700;">${escapeHtml(r.user_name)} <span style="color:var(--muted); font-weight:400;">(${escapeHtml(r.user_email)})</span></div>
+            <div style="color:var(--muted); font-size:13px; margin:2px 0 10px;">
+              ${centsToDollars(r.amount_cents)} at ${escapeHtml(r.restaurant_name || "—")} · ${timeAgo(r.created_at)}
+            </div>
+            <div style="display:flex; gap:8px;">
+              <button class="secondary" style="flex:1;" data-reject-id="${r.id}">Reject</button>
+              <button class="primary" style="flex:1;" data-approve-id="${r.id}">Approve</button>
+            </div>
+          </div>
+        `
+        )
+        .join("");
+    }
+
+    async function loadReports() {
+      const { reports } = await adminFetch("/api/admin/reports");
+      const box = document.getElementById("reports");
+      if (reports.length === 0) {
+        box.className = "empty-state";
+        box.textContent = "No open reports.";
+        return;
+      }
+      box.className = "";
+      box.innerHTML = reports
+        .map(
+          (r) => `
+          <div class="card post-card">
+            <img class="post-photo" style="max-height:200px;" src="${r.post_photo_url}" loading="lazy" />
+            <div class="post-body">
+              <div style="font-size:13px; color:var(--muted);">
+                Post by <strong style="color:var(--ink);">${escapeHtml(r.post_author_name)}</strong> · ${r.post_rating}/10
+              </div>
+              ${r.post_caption ? `<div class="post-caption">${escapeHtml(r.post_caption)}</div>` : ""}
+              <div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--border);">
+                <div style="font-size:13px;"><strong>Reported by</strong> ${escapeHtml(r.reporter_name)} (${escapeHtml(r.reporter_email)})</div>
+                <div style="font-size:13px; color:var(--muted); margin-top:4px;">${escapeHtml(r.reason || "(no reason given)")}</div>
+                <div style="font-size:12px; color:var(--muted); margin-top:4px;">${timeAgo(r.created_at)}</div>
+              </div>
+              <button class="secondary" style="width:100%; margin-top:10px;" data-resolve-id="${r.id}">Mark resolved</button>
+            </div>
+          </div>
+        `
+        )
+        .join("");
+    }
+
+    document.getElementById("redemptions").addEventListener("click", async (e) => {
+      const approveBtn = e.target.closest("[data-approve-id]");
+      const rejectBtn = e.target.closest("[data-reject-id]");
+      if (!approveBtn && !rejectBtn) return;
+      const btn = approveBtn || rejectBtn;
+      const id = btn.dataset.approveId || btn.dataset.rejectId;
+      const action = approveBtn ? "approve" : "reject";
+      btn.disabled = true;
+      try {
+        await adminFetch(`/api/admin/redemptions/${id}/${action}`, { method: "POST" });
+        await loadRedemptions();
+      } catch (err) {
+        alert(err.message);
+        btn.disabled = false;
+      }
+    });
+
+    document.getElementById("reports").addEventListener("click", async (e) => {
+      const btn = e.target.closest("[data-resolve-id]");
+      if (!btn) return;
+      btn.disabled = true;
+      try {
+        await adminFetch(`/api/admin/reports/${btn.dataset.resolveId}/resolve`, { method: "POST" });
+        await loadReports();
+      } catch (err) {
+        alert(err.message);
+        btn.disabled = false;
+      }
+    });
+
+    async function unlock() {
+      try {
+        await loadRedemptions();
+        await loadReports();
+        showPanel();
+      } catch (err) {
+        showGate(err.message);
+      }
+    }
+
+    document.getElementById("gate-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      sessionStorage.setItem(SECRET_KEY, document.getElementById("secret-input").value);
+      await unlock();
+    });
+
+    document.getElementById("lock-btn").addEventListener("click", () => {
+      sessionStorage.removeItem(SECRET_KEY);
+      showGate();
+    });
+
+    (async () => {
+      if (sessionStorage.getItem(SECRET_KEY)) {
+        await unlock();
+      }
+    })();
+  </script>
+</body>
+</html>

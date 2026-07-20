@@ -22,6 +22,7 @@
           <div style="color:var(--muted); font-size:13px;">Snap a photo to share it with your friends</div>
         </div>
       </a>
+      <div id="ftc-banner-slot"></div>
       <div id="feed" class="loading">Loading feed…</div>
     </main>
     <div id="tabbar-slot"></div>
@@ -33,7 +34,9 @@
       if (!user) return;
 
       document.getElementById("tabbar-slot").innerHTML = renderTabbar("Feed");
+      document.getElementById("ftc-banner-slot").innerHTML = ftcBanner();
       wireCheerButtons(document.getElementById("main"));
+      initReportModal(document.getElementById("main"));
 
       try {
         const { posts } = await api.get("/api/feed");
