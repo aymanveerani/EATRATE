@@ -237,6 +237,7 @@ nav.tabbar {
   bottom: 0;
   left: 50%;
   transform: translateX(-50%);
+  z-index: 2000; /* above Leaflet's panes/controls (~1000) on the map page */
   width: 100%;
   max-width: 430px;
   background: rgba(19, 19, 23, 0.92);
@@ -389,7 +390,7 @@ nav.tabbar .icon { font-size: 20px; }
   bottom: 20px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 20;
+  z-index: 2001; /* above nav.tabbar (2000) */
   width: 56px;
   height: 56px;
   border-radius: 50%;

@@ -81,6 +81,34 @@ registrar; DNS propagation usually takes a few minutes to a few hours.
 - The reward amount ($10) and the trigger count (5) are constants in
   [server/app.py](server/app.py) (`REWARD_EVERY_N_POSTS`, `REWARD_AMOUNT_CENTS`).
 
+## Map & business dashboard
+
+**There is no "every restaurant in America" dataset here** — that isn't free, and isn't legal to
+bulk-store from Google Places or Yelp without a paid contract. Instead, [`map.html`](static/map.html)
+works the way real map apps do: it fetches real restaurants for whatever viewport you're currently
+looking at from **OpenStreetMap's Overpass API** (free, keyless), the same way Yelp/Google Maps
+load results as you pan instead of downloading the planet up front.
+
+- [server/osm.py](server/osm.py) fetches a coarse grid of ~2×2km cells covering the requested
+  viewport, caching each cell in `map_cache` for 7 days so repeated visits to the same area don't
+  re-hit Overpass. Every fetched place becomes a real row in `restaurants` (matched on OSM's node
+  id via a unique index, so re-fetching never duplicates it) — it's the same restaurant entity
+  users can post about and businesses can claim, not a separate read-only layer.
+- Overpass is a shared free public service with variable load — occasional slow or failed cells
+  are expected, not a bug. Failed cells are simply left uncached and retried on the next request;
+  a single map load is bounded to a handful of live Overpass calls so one dense area (found this
+  the hard way testing Manhattan, which 504s on naive queries) can't hang the page.
+- Coverage reflects OpenStreetMap's crowd-sourced data: good to very good in cities, sparser in
+  small towns and rural areas. That's the real tradeoff of "free and keyless" vs. a paid provider.
+- **Claiming a restaurant** ([claim.html](static/claim.html)) is self-service for this pilot — no
+  identity verification, first claim wins (`business_claims.restaurant_id` is unique). The claim
+  form says this explicitly. A claimed restaurant gets a
+  [business.html](static/business.html) dashboard: average rating, review count, total cheers, a
+  week-by-week rating trend, and every customer photo — all scoped to restaurants *that user* has
+  claimed via `GET /api/business/dashboard`.
+- Restaurant pages show a "Claimed by [business]" badge once claimed, or a "claim this listing"
+  link if not.
+
 ## Trust & safety (pilot compliance)
 
 Added for the pilot launch, since reviewers are being paid to post:
@@ -167,16 +195,24 @@ eatrate/
     db.py                 SQLite schema + connection helper (reads DATA_DIR env var)
     auth.py                password hashing, sessions
     photos.py               base64 photo decode + save to DATA_DIR/uploads/
-    giftcards.py             gift card issuance (simulated, swap in real provider here)
-    app.py                    HTTP router + all API handlers
+    osm.py                    OpenStreetMap/Overpass fetch + grid-cell caching
+    admin.py                   admin secret + manual-review-limit constant
+    notify.py                    report email notification (simulated or SMTP)
+    giftcards.py                   gift card issuance (simulated, swap in real provider here)
+    app.py                          HTTP router + all API handlers
   static/
     index.html              friends feed (home screen) + camera CTA
+    map.html                 live map of nearby restaurants (Leaflet + OSM)
+    claim.html                 self-service business claim form
+    business.html                claimed-restaurant dashboard
     capture.html              photo-first post creation flow
     friends.html                add/remove friends
     login.html / signup.html
     restaurant.html              restaurant detail, photo grid of posts
     rewards.html                  pending/redeemed rewards, redeem flow
     profile.html                    your post grid, stats, logout
+    admin.html                       pilot fraud-review panel (not in nav)
+    vendor/leaflet/                    vendored Leaflet.js — no CDN dependency
     css/app.css
     js/api.js                        fetch wrapper + shared post/tabbar rendering
 
@@ -193,7 +229,10 @@ project root locally, a mounted volume in production — and are gitignored.)
 | POST   | `/api/logout`                     | ✓    | |
 | GET    | `/api/me`                         | ✓    | |
 | GET    | `/api/restaurants`                | –    | list with avg rating + post count |
-| GET    | `/api/restaurants/:id`            | ✓    | detail + all posts (photo grid) |
+| GET    | `/api/restaurants/:id`            | ✓    | detail + all posts (photo grid) + claim status |
+| GET    | `/api/map/restaurants`            | ✓    | `?min_lat&min_lng&max_lat&max_lng` — live OSM-backed viewport search |
+| POST   | `/api/restaurants/:id/claim`      | ✓    | `{business_name, contact_email}` — self-service, first claim wins (409 if already claimed) |
+| GET    | `/api/business/dashboard`         | ✓    | stats + weekly trend + photos for every restaurant you've claimed |
 | POST   | `/api/posts`                      | ✓    | `{photo: data-url, restaurant_name, rating: 0-10, caption?}` — restaurant is found-or-created by name; `429` if rate-limited |
 | POST   | `/api/posts/:id/cheer`            | ✓    | toggles a cheer; 403 if you're not the author or their friend |
 | POST   | `/api/posts/:id/report`           | ✓    | `{reason?}` — flags a post, notifies the operator |
@@ -219,6 +258,10 @@ data they can't get from Yelp/Google. `server/giftcards.py` is where a restauran
 card pool would plug in — right now the app issues cards without deducting from any restaurant
 balance, since there's no billing/partner system yet. That's the natural next build if you want
 to take this further.
+
+The business dashboard ([business.html](static/business.html)) is the first piece of that pitch
+actually built: free for the pilot, but the natural next step is a paid tier — richer analytics,
+competitor comparison, a "featured" boost on the map — once there's real usage to sell against.
 
 ## Turning this into a real mobile app
 

@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Map — EatRate</title>
+  <link rel="stylesheet" href="/vendor/leaflet/leaflet.css" />
+  <link rel="stylesheet" href="/css/app.css" />
+  <style>
+    /* The map needs to fill the space edge-to-edge, overriding main's usual padding. */
+    body { overflow: hidden; }
+    .app { padding-bottom: 0; }
+    /* app.css's generic `main { flex: 1 }` sets flex-basis:0%, which wins
+       over an explicit height in a column flex layout — override flex-basis
+       back to auto so the explicit height below actually takes effect. */
+    main.map-main { flex: 1 1 auto; padding: 0; position: relative; height: calc(100vh - 68px); }
+    #map { width: 100%; height: 100%; background: var(--card-2); }
+    #map-status {
+      position: absolute;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 500;
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 13px;
+      padding: 8px 14px;
+      border-radius: 999px;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+      display: none;
+    }
+    .leaflet-popup-content-wrapper {
+      background: var(--card);
+      color: var(--ink);
+      border-radius: 12px;
+    }
+    .leaflet-popup-tip { background: var(--card); }
+    .map-popup .name { font-weight: 700; font-size: 14px; margin-bottom: 2px; }
+    .map-popup .meta { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+    .map-popup a { color: var(--accent); font-size: 13px; font-weight: 600; text-decoration: none; }
+    nav.tabbar { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand"><div class="mark">🍴</div><h1>Map</h1></div>
+    </header>
+    <main class="map-main">
+      <div id="map"></div>
+      <div id="map-status"></div>
+    </main>
+    <div id="tabbar-slot"></div>
+  </div>
+  <script src="/vendor/leaflet/leaflet.js"></script>
+  <script src="/js/api.js"></script>
+  <script>
+    const DEFAULT_CENTER = [39.8283, -98.5795]; // geographic center of the contiguous US
+    const DEFAULT_ZOOM = 4;
+    const MIN_ZOOM_FOR_RESTAURANTS = 12; // below this, tell the user to zoom in
+
+    let map;
+    let markers = [];
+    let fetchInFlight = false;
+    let statusTimeout = null;
+
+    function showStatus(text, autoHideMs) {
+      const el = document.getElementById("map-status");
+      el.textContent = text;
+      el.style.display = text ? "block" : "none";
+      if (statusTimeout) clearTimeout(statusTimeout);
+      if (text && autoHideMs) {
+        statusTimeout = setTimeout(() => (el.style.display = "none"), autoHideMs);
+      }
+    }
+
+    function clearMarkers() {
+      markers.forEach((m) => map.removeLayer(m));
+      markers = [];
+    }
+
+    function popupHtml(r) {
+      const ratingText = r.post_count > 0 ? `${r.avg_rating}/10 · ${r.post_count} post${r.post_count === 1 ? "" : "s"}` : "No posts yet";
+      const claimLink = r.claimed
+        ? `<div style="color:var(--good); font-size:12px; margin-top:4px;">✓ Claimed by owner</div>`
+        : `<a href="/claim.html?restaurant_id=${r.id}&name=${encodeURIComponent(r.name)}">Are you the owner? Claim this listing</a>`;
+      return `
+        <div class="map-popup">
+          <div class="name">${escapeHtml(r.name)}</div>
+          <div class="meta">${escapeHtml(r.cuisine || "Restaurant")} · ${ratingText}</div>
+          <a href="/restaurant.html?id=${r.id}">View reviews &amp; photos →</a>
+          <br/>${claimLink}
+        </div>`;
+    }
+
+    async function loadRestaurantsInView() {
+      if (map.getZoom() < MIN_ZOOM_FOR_RESTAURANTS) {
+        clearMarkers();
+        showStatus("Zoom in to see restaurants");
+        return;
+      }
+      if (fetchInFlight) return;
+      fetchInFlight = true;
+      showStatus("Loading nearby restaurants…");
+
+      const b = map.getBounds();
+      try {
+        const params = new URLSearchParams({
+          min_lat: b.getSouth(),
+          min_lng: b.getWest(),
+          max_lat: b.getNorth(),
+          max_lng: b.getEast(),
+        });
+        const { restaurants } = await api.get(`/api/map/restaurants?${params}`);
+        clearMarkers();
+        restaurants.forEach((r) => {
+          if (r.lat == null || r.lng == null) return;
+          const marker = L.marker([r.lat, r.lng]).addTo(map);
+          marker.bindPopup(popupHtml(r));
+          markers.push(marker);
+        });
+        showStatus(restaurants.length === 0 ? "No restaurants found here yet" : "", restaurants.length === 0 ? 2500 : 0);
+      } catch (err) {
+        showStatus(err.message, 4000);
+      } finally {
+        fetchInFlight = false;
+      }
+    }
+
+    function initMap(center, zoom) {
+      map = L.map("map", { zoomControl: true }).setView(center, zoom);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: "&copy; OpenStreetMap contributors",
+      }).addTo(map);
+      map.on("moveend", loadRestaurantsInView);
+      loadRestaurantsInView();
+    }
+
+    (async () => {
+      const user = await requireAuth();
+      if (!user) return;
+      document.getElementById("tabbar-slot").innerHTML = renderTabbar("Map");
+
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => initMap([pos.coords.latitude, pos.coords.longitude], 15),
+          () => initMap(DEFAULT_CENTER, DEFAULT_ZOOM),
+          { timeout: 5000 }
+        );
+      } else {
+        initMap(DEFAULT_CENTER, DEFAULT_ZOOM);
+      }
+    })();
+  </script>
+</body>
+</html>

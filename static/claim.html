@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Claim your restaurant — EatRate</title>
+  <link rel="stylesheet" href="/css/app.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <a href="/map.html" style="text-decoration:none; color:var(--ink); font-size:20px;">←</a>
+      </div>
+      <h1 style="font-size:18px;">Claim your business</h1>
+    </header>
+    <main>
+      <div class="card">
+        <h2 id="restaurant-name" style="margin-top:0;">Loading…</h2>
+        <p style="color:var(--muted); font-size:14px; margin-top:-8px;">
+          This is a self-service claim for our pilot — we don't verify ownership yet, so treat it
+          as "this is my business" rather than a legally binding claim. Once claimed, you'll get a
+          dashboard with your reviews, photos, and stats.
+        </p>
+        <div id="error" style="display:none;" class="error-msg"></div>
+        <form id="claim-form">
+          <div>
+            <label for="business-name">Business / owner name</label>
+            <input type="text" id="business-name" required autocomplete="organization" />
+          </div>
+          <div>
+            <label for="contact-email">Contact email</label>
+            <input type="email" id="contact-email" required autocomplete="email" />
+          </div>
+          <button type="submit" class="primary" id="submit-btn">Claim this listing</button>
+        </form>
+      </div>
+    </main>
+    <div id="tabbar-slot"></div>
+  </div>
+  <script src="/js/api.js"></script>
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const restaurantId = params.get("restaurant_id");
+    const prefillName = params.get("name");
+
+    const form = document.getElementById("claim-form");
+    const errorBox = document.getElementById("error");
+    const submitBtn = document.getElementById("submit-btn");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      errorBox.style.display = "none";
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Submitting…";
+      try {
+        await api.post(`/api/restaurants/${restaurantId}/claim`, {
+          business_name: document.getElementById("business-name").value,
+          contact_email: document.getElementById("contact-email").value,
+        });
+        window.location.href = "/business.html";
+      } catch (err) {
+        errorBox.textContent = err.message;
+        errorBox.style.display = "block";
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Claim this listing";
+      }
+    });
+
+    (async () => {
+      const user = await requireAuth();
+      if (!user) return;
+      document.getElementById("tabbar-slot").innerHTML = renderTabbar("");
+
+      if (!restaurantId) {
+        document.getElementById("restaurant-name").textContent = "No restaurant specified.";
+        form.style.display = "none";
+        return;
+      }
+
+      if (prefillName) {
+        document.getElementById("restaurant-name").textContent = prefillName;
+      } else {
+        try {
+          const { restaurant } = await api.get(`/api/restaurants/${restaurantId}`);
+          document.getElementById("restaurant-name").textContent = restaurant.name;
+          if (restaurant.claimed) {
+            errorBox.textContent = "This restaurant has already been claimed.";
+            errorBox.style.display = "block";
+            form.style.display = "none";
+          }
+        } catch (e) {
+          document.getElementById("restaurant-name").textContent = "Restaurant not found.";
+          form.style.display = "none";
+        }
+      }
+    })();
+  </script>
+</body>
+</html>

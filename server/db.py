@@ -35,7 +35,29 @@ CREATE TABLE IF NOT EXISTS restaurants (
     name TEXT NOT NULL,
     cuisine TEXT NOT NULL DEFAULT '',
     address TEXT NOT NULL DEFAULT '',
+    lat REAL,
+    lng REAL,
+    osm_id TEXT,
+    source TEXT NOT NULL DEFAULT 'user',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_restaurants_osm_id ON restaurants(osm_id) WHERE osm_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS business_claims (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    restaurant_id INTEGER NOT NULL UNIQUE,
+    user_id INTEGER NOT NULL,
+    business_name TEXT NOT NULL,
+    contact_email TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (restaurant_id) REFERENCES restaurants(id),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS map_cache (
+    cell_key TEXT PRIMARY KEY,
+    fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS posts (
@@ -104,6 +126,10 @@ CREATE TABLE IF NOT EXISTS reports (
 MIGRATIONS = [
     "ALTER TABLE rewards ADD COLUMN manual_review_required INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE rewards ADD COLUMN manual_review_status TEXT",
+    "ALTER TABLE restaurants ADD COLUMN lat REAL",
+    "ALTER TABLE restaurants ADD COLUMN lng REAL",
+    "ALTER TABLE restaurants ADD COLUMN osm_id TEXT",
+    "ALTER TABLE restaurants ADD COLUMN source TEXT NOT NULL DEFAULT 'user'",
 ]
 
 

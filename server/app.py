@@ -8,12 +8,13 @@ from datetime import datetime
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from server import admin, auth
 from server.db import get_connection, init_db, UPLOADS_DIR
 from server.giftcards import issue_gift_card
 from server.notify import notify_report
+from server.osm import OsmError, sync_bbox
 from server.photos import PhotoError, save_photo
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
@@ -50,11 +51,14 @@ def public_user(row):
 
 
 def public_restaurant(row):
+    keys = row.keys()
     return {
         "id": row["id"],
         "name": row["name"],
         "cuisine": row["cuisine"],
         "address": row["address"],
+        "lat": row["lat"] if "lat" in keys else None,
+        "lng": row["lng"] if "lng" in keys else None,
     }
 
 
@@ -254,15 +258,167 @@ def get_restaurant(ctx, restaurant_id):
         """,
         (user["id"], restaurant_id),
     ).fetchall()
+    claim = conn.execute(
+        "SELECT * FROM business_claims WHERE restaurant_id = ?", (restaurant_id,)
+    ).fetchone()
     conn.close()
 
     data = public_restaurant(restaurant)
     data["posts"] = [public_post(r) for r in posts]
+    data["claimed"] = claim is not None
+    data["claimed_by_me"] = claim is not None and claim["user_id"] == user["id"]
+    data["business_name"] = claim["business_name"] if claim else None
     if posts:
         data["avg_rating"] = round(sum(r["rating"] for r in posts) / len(posts), 1)
     else:
         data["avg_rating"] = 0
     ctx.send_json(HTTPStatus.OK, {"restaurant": data})
+
+
+# ---------------------------------------------------------------------------
+# Map (live OpenStreetMap-backed restaurant search) + business claims
+# ---------------------------------------------------------------------------
+
+@route("GET", r"/api/map/restaurants")
+def map_restaurants(ctx):
+    ctx.require_user()
+    q = parse_qs(ctx.parsed_url.query)
+    try:
+        min_lat = float(q["min_lat"][0])
+        min_lng = float(q["min_lng"][0])
+        max_lat = float(q["max_lat"][0])
+        max_lng = float(q["max_lng"][0])
+    except (KeyError, ValueError, IndexError):
+        raise ApiError(400, "min_lat, min_lng, max_lat, max_lng query params are required.")
+
+    conn = get_connection()
+    try:
+        rows = sync_bbox(conn, min_lat, min_lng, max_lat, max_lng)
+    except OsmError as e:
+        conn.close()
+        raise ApiError(400, str(e))
+
+    restaurant_ids = [r["id"] for r in rows]
+    stats = {}
+    claimed_ids = set()
+    if restaurant_ids:
+        placeholders = ",".join("?" * len(restaurant_ids))
+        for r in conn.execute(
+            f"SELECT restaurant_id, COUNT(*) AS post_count, AVG(rating) AS avg_rating "
+            f"FROM posts WHERE restaurant_id IN ({placeholders}) GROUP BY restaurant_id",
+            restaurant_ids,
+        ):
+            stats[r["restaurant_id"]] = {"post_count": r["post_count"], "avg_rating": round(r["avg_rating"], 1)}
+        claimed_ids = {
+            r["restaurant_id"]
+            for r in conn.execute(
+                f"SELECT restaurant_id FROM business_claims WHERE restaurant_id IN ({placeholders})",
+                restaurant_ids,
+            )
+        }
+    conn.close()
+
+    out = []
+    for r in rows:
+        item = public_restaurant(r)
+        s = stats.get(r["id"], {"post_count": 0, "avg_rating": 0})
+        item["post_count"] = s["post_count"]
+        item["avg_rating"] = s["avg_rating"]
+        item["claimed"] = r["id"] in claimed_ids
+        out.append(item)
+    ctx.send_json(HTTPStatus.OK, {"restaurants": out})
+
+
+@route("POST", r"/api/restaurants/(?P<restaurant_id>\d+)/claim")
+def claim_restaurant(ctx, restaurant_id):
+    user = ctx.require_user()
+    body = ctx.json_body()
+    business_name = (body.get("business_name") or "").strip()[:200]
+    contact_email = (body.get("contact_email") or "").strip().lower()[:200]
+    if not business_name:
+        raise ApiError(400, "Business name is required.")
+    if not contact_email or "@" not in contact_email:
+        raise ApiError(400, "A valid contact email is required.")
+
+    conn = get_connection()
+    restaurant = conn.execute("SELECT id FROM restaurants WHERE id = ?", (restaurant_id,)).fetchone()
+    if restaurant is None:
+        conn.close()
+        raise ApiError(404, "Restaurant not found.")
+
+    existing = conn.execute(
+        "SELECT id FROM business_claims WHERE restaurant_id = ?", (restaurant_id,)
+    ).fetchone()
+    if existing:
+        conn.close()
+        raise ApiError(409, "This restaurant has already been claimed.")
+
+    conn.execute(
+        "INSERT INTO business_claims (restaurant_id, user_id, business_name, contact_email) VALUES (?, ?, ?, ?)",
+        (restaurant_id, user["id"], business_name, contact_email),
+    )
+    conn.commit()
+    conn.close()
+    ctx.send_json(HTTPStatus.CREATED, {"ok": True})
+
+
+@route("GET", r"/api/business/dashboard")
+def business_dashboard(ctx):
+    user = ctx.require_user()
+    conn = get_connection()
+    claims = conn.execute(
+        """
+        SELECT business_claims.*, restaurants.name AS restaurant_name,
+               restaurants.cuisine, restaurants.address
+        FROM business_claims
+        JOIN restaurants ON restaurants.id = business_claims.restaurant_id
+        WHERE business_claims.user_id = ?
+        ORDER BY business_claims.created_at DESC
+        """,
+        (user["id"],),
+    ).fetchall()
+
+    out = []
+    for claim in claims:
+        rid = claim["restaurant_id"]
+        posts = conn.execute(
+            """
+            SELECT posts.*, users.name AS user_name,
+                   (SELECT COUNT(*) FROM cheers WHERE cheers.post_id = posts.id) AS cheers_count
+            FROM posts
+            JOIN users ON users.id = posts.user_id
+            WHERE posts.restaurant_id = ?
+            ORDER BY posts.created_at DESC
+            """,
+            (rid,),
+        ).fetchall()
+        weekly = conn.execute(
+            """
+            SELECT strftime('%Y-%W', created_at) AS week, COUNT(*) AS post_count, AVG(rating) AS avg_rating
+            FROM posts WHERE restaurant_id = ? GROUP BY week ORDER BY week ASC
+            """,
+            (rid,),
+        ).fetchall()
+
+        out.append(
+            {
+                "restaurant_id": rid,
+                "restaurant_name": claim["restaurant_name"],
+                "cuisine": claim["cuisine"],
+                "address": claim["address"],
+                "business_name": claim["business_name"],
+                "post_count": len(posts),
+                "avg_rating": round(sum(p["rating"] for p in posts) / len(posts), 1) if posts else 0,
+                "total_cheers": sum(p["cheers_count"] for p in posts),
+                "weekly": [
+                    {"week": w["week"], "post_count": w["post_count"], "avg_rating": round(w["avg_rating"], 1)}
+                    for w in weekly
+                ],
+                "posts": [public_post(p) for p in posts][:20],
+            }
+        )
+    conn.close()
+    ctx.send_json(HTTPStatus.OK, {"businesses": out})
 
 
 # ---------------------------------------------------------------------------

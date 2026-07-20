@@ -63,6 +63,7 @@ async function requireAuth() {
 function renderTabbar(active) {
   const left = [
     { href: "/index.html", icon: "🍽️", label: "Feed" },
+    { href: "/map.html", icon: "🗺️", label: "Map" },
     { href: "/friends.html", icon: "🧑‍🤝‍🧑", label: "Friends" },
   ];
   const right = [
@@ -146,8 +147,8 @@ function initReportModal(container) {
     document.body.insertAdjacentHTML(
       "beforeend",
       `
-      <div id="report-modal-backdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:30;"></div>
-      <div id="report-modal" style="display:none; position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100%; max-width:430px; background:var(--card); border:1px solid var(--border); border-bottom:none; border-radius:18px 18px 0 0; padding:20px; z-index:31;">
+      <div id="report-modal-backdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:3000;"></div>
+      <div id="report-modal" style="display:none; position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100%; max-width:430px; background:var(--card); border:1px solid var(--border); border-bottom:none; border-radius:18px 18px 0 0; padding:20px; z-index:3001;">
         <h3 style="margin-top:0;">Report this post</h3>
         <p style="color:var(--muted); font-size:14px; margin-top:-8px;">Let us know what's wrong — we review every report.</p>
         <div id="report-error" style="display:none;" class="error-msg"></div>

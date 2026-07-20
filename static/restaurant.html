@@ -32,6 +32,10 @@
         ? restaurant.posts.map(renderPostCard).join("")
         : `<div class="empty-state">No one's shared this place yet.</div>`;
 
+      const claimHtml = restaurant.claimed
+        ? `<div class="badge redeemed" style="margin-top:8px;">✓ Claimed by ${escapeHtml(restaurant.business_name)}</div>`
+        : `<a href="/claim.html?restaurant_id=${restaurant.id}&name=${encodeURIComponent(restaurant.name)}" style="display:block; margin-top:8px; color:var(--accent); font-size:13px; font-weight:600; text-decoration:none;">Are you the owner? Claim this listing →</a>`;
+
       document.getElementById("content").innerHTML = `
         <div class="card">
           <div class="meta" style="color:var(--muted); margin-bottom:4px;">${escapeHtml(restaurant.cuisine || "Restaurant")}${restaurant.address ? " · " + escapeHtml(restaurant.address) : ""}</div>
@@ -39,6 +43,7 @@
             <span style="font-size:32px; font-weight:800;">${restaurant.posts.length ? restaurant.avg_rating : "—"}</span>
             <span style="color:var(--muted);">/ 10 · ${restaurant.posts.length} post${restaurant.posts.length === 1 ? "" : "s"}</span>
           </div>
+          ${claimHtml}
         </div>
 
         <a href="/capture.html?restaurant=${encodeURIComponent(restaurant.name)}" class="card primary" style="display:block; text-align:center; text-decoration:none; background:var(--accent); color:white; font-weight:700;">
