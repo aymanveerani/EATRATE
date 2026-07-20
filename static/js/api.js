@@ -148,15 +148,28 @@ function cuisineIcon(cuisine) {
   return CUISINE_ICONS[key] || "🍽️";
 }
 
-function renderNearbyLogo(r) {
-  const fallback = `<span class="nearby-logo-fallback">${cuisineIcon(r.cuisine)}</span>`;
-  if (!r.website_domain) return fallback;
-  // Google's public favicon service — the closest thing to a real "logo" we
-  // can get without a paid Places/Yelp API. Falls back to the cuisine icon
-  // if the domain has no favicon or the request fails.
-  const faviconUrl = `https://www.google.com/s2/favicons?domain=${encodeURIComponent(r.website_domain)}&sz=64`;
-  return `
-    <img src="${faviconUrl}" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('span'), {className:'nearby-logo-fallback', textContent:'${cuisineIcon(r.cuisine)}'}));" />`;
+function nearbyFallbackHtml(r) {
+  return `<span class="nearby-photo-fallback">${cuisineIcon(r.cuisine)}</span>`;
+}
+
+function renderNearbyPhoto(r) {
+  const fallback = nearbyFallbackHtml(r);
+  const onerror = `this.replaceWith(Object.assign(document.createElement('span'), {className:'nearby-photo-fallback', textContent:'${cuisineIcon(r.cuisine)}'}));`;
+
+  // Prefer a real photo of the actual place: a user's own review photo
+  // first (most authentic and most likely to exist), then an OSM-sourced
+  // photo if the place has one, then a favicon logo, then a cuisine icon.
+  if (r.photo_url) {
+    return `<img class="photo" src="${r.photo_url}" loading="lazy" onerror="${onerror}" />`;
+  }
+  if (r.osm_image) {
+    return `<img class="photo" src="${r.osm_image}" loading="lazy" onerror="${onerror}" />`;
+  }
+  if (r.website_domain) {
+    const faviconUrl = `https://www.google.com/s2/favicons?domain=${encodeURIComponent(r.website_domain)}&sz=64`;
+    return `<img class="favicon" src="${faviconUrl}" loading="lazy" onerror="${onerror}" />`;
+  }
+  return fallback;
 }
 
 function renderNearbyCard(r) {
@@ -166,12 +179,13 @@ function renderNearbyCard(r) {
       : `<div class="nearby-rating empty">New</div>`;
   return `
     <a href="/restaurant.html?id=${r.id}" class="nearby-card">
-      <div class="nearby-logo">${renderNearbyLogo(r)}</div>
+      <div class="nearby-photo">${renderNearbyPhoto(r)}</div>
       <div class="nearby-info">
         <div class="nearby-name">${escapeHtml(r.name)}</div>
         <div class="nearby-meta">${escapeHtml(r.cuisine || "Restaurant")}</div>
       </div>
       ${ratingHtml}
+      <span class="nearby-chevron">›</span>
     </a>`;
 }
 

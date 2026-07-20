@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS restaurants (
     source TEXT NOT NULL DEFAULT 'user',
     soft_launch_partner INTEGER NOT NULL DEFAULT 0,
     website_domain TEXT NOT NULL DEFAULT '',
+    osm_image TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -136,6 +137,7 @@ MIGRATIONS = [
     "ALTER TABLE restaurants ADD COLUMN source TEXT NOT NULL DEFAULT 'user'",
     "ALTER TABLE restaurants ADD COLUMN soft_launch_partner INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE restaurants ADD COLUMN website_domain TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE restaurants ADD COLUMN osm_image TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE business_claims ADD COLUMN trial_ends_at TEXT",
     "ALTER TABLE business_claims ADD COLUMN cached_insights TEXT",
     "ALTER TABLE business_claims ADD COLUMN insights_generated_at TEXT",

@@ -543,9 +543,9 @@ nav.tabbar .icon { font-size: 20px; }
   border-color: var(--accent);
 }
 
-.nearby-card .nearby-logo {
-  width: 48px;
-  height: 48px;
+.nearby-card .nearby-photo {
+  width: 64px;
+  height: 64px;
   border-radius: 12px;
   flex-shrink: 0;
   overflow: hidden;
@@ -554,18 +554,30 @@ nav.tabbar .icon { font-size: 20px; }
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 22px;
+  font-size: 26px;
 }
 
-.nearby-card .nearby-logo img {
+.nearby-card .nearby-photo img.photo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.nearby-card .nearby-photo img.favicon {
   width: 100%;
   height: 100%;
   object-fit: contain;
-  padding: 9px;
+  padding: 12px;
   background: white;
 }
 
-.nearby-card .nearby-logo .nearby-logo-fallback { line-height: 1; }
+.nearby-card .nearby-photo .nearby-photo-fallback { line-height: 1; }
+
+.nearby-card .nearby-chevron {
+  color: var(--muted);
+  font-size: 16px;
+  flex-shrink: 0;
+}
 
 .nearby-card .nearby-info {
   flex: 1;

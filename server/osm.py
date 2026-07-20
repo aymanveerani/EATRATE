@@ -2,44 +2,39 @@
 Live restaurant data from OpenStreetMap via the public Overpass API — free,
 no account or API key needed, unlike Google Places / Yelp.
 
-There's no "download all restaurants in America" here: that's neither free
-nor something Overpass's fair-use policy wants from any single client, and
-loading millions of rows into a SQLite file isn't how map apps actually
-work anyway. Instead, this fetches restaurants for the map viewport the user
-is currently looking at (same approach Yelp/Google Maps use), grouped into
-a coarse grid so repeated pans over the same area reuse cached results
-instead of re-querying Overpass every time.
+The "nearby restaurants" feature searches a fixed 5-mile radius around the
+user, so this fetches that whole area in a single Overpass query per
+request rather than tiling it into many small grid cells — there's no
+pannable map anymore that would benefit from incremental tile caching, and
+tiling meant a full radius took many repeated page loads to fully populate
+(only a handful of new tiles fetched per request). A single query also
+means results appear in one round-trip.
 
 Every fetched place becomes a real row in the `restaurants` table (matched
 on OSM's node id so re-fetching doesn't duplicate it), so it's the same
 restaurant entity users can post about, rate, and businesses can claim.
+
+Repeat requests from users in roughly the same area reuse a cached result
+(keyed by a coarse rounding of the search center) for CACHE_TTL_DAYS,
+instead of hitting Overpass on every single page load.
 """
 
 import json
 import math
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
-CELL_SIZE_DEGREES = 0.02  # ~2x2km grid cells — small enough that dense areas
-# (e.g. Manhattan) don't make a single cell's Overpass query time out
-#
-# This caps total bbox *size*, not per-request work — that's bounded
-# separately by MAX_NEW_FETCHES_PER_REQUEST below, so it's safe to be
-# generous here. A fixed-radius "restaurants near you" search (~8km) needs
-# roughly 80-150 cells depending on latitude; a large area just fills in
-# its cache gradually over a few requests instead of failing outright.
-MAX_CELLS_PER_REQUEST = 400
-MAX_RESULTS_PER_CELL = 200
+MAX_RESULTS = 300
 CACHE_TTL_DAYS = 7
-REQUEST_TIMEOUT = 8  # Overpass is a shared free public instance; fail fast
-# and let the next request retry rather than let one dense cell hang the page
-MAX_NEW_FETCHES_PER_REQUEST = 10  # fetched concurrently (see sync_bbox), so
-# this bounds one HTTP response to roughly one Overpass round-trip (~8s
-# worst case) rather than multiplying by the cell count; any remaining
-# uncached cells in the viewport get picked up by a subsequent request
+CACHE_SNAP_DEGREES = 0.03  # ~3.3km — search centers within this snap grid
+# share a cached fetch instead of re-querying Overpass; small enough that a
+# 5-mile-radius search from the snapped center still covers the real request
+MAX_BBOX_DEGREES = 0.5  # ~55km — sanity cap against absurdly large requests
+REQUEST_TIMEOUT = 15  # a single query over a ~16km bbox takes longer than a
+# small tile did; Overpass is a shared free public instance, so fail fast
+# and let the next request retry rather than hang the page indefinitely
 AMENITIES = ("restaurant", "cafe", "fast_food")
 
 
@@ -47,15 +42,15 @@ class OsmError(Exception):
     pass
 
 
-def _cell_key(cell_y, cell_x):
-    return f"{cell_y}:{cell_x}"
+def _snap_key(lat, lng):
+    return f"{round(lat / CACHE_SNAP_DEGREES)}:{round(lng / CACHE_SNAP_DEGREES)}"
 
 
-def _fetch_cell_from_overpass(min_lat, min_lng, max_lat, max_lng):
+def _fetch_bbox_from_overpass(min_lat, min_lng, max_lat, max_lng):
     clauses = "\n".join(
         f'  node["amenity"="{a}"]({min_lat},{min_lng},{max_lat},{max_lng});' for a in AMENITIES
     )
-    query = f"[out:json][timeout:{REQUEST_TIMEOUT}];\n(\n{clauses}\n);\nout body {MAX_RESULTS_PER_CELL};"
+    query = f"[out:json][timeout:{REQUEST_TIMEOUT}];\n(\n{clauses}\n);\nout body {MAX_RESULTS};"
 
     data = urllib.parse.urlencode({"data": query}).encode("utf-8")
     req = urllib.request.Request(
@@ -92,6 +87,11 @@ def _fetch_cell_from_overpass(min_lat, min_lng, max_lat, max_lng):
                 domain = domain[4:]
             domain = domain[:200]
 
+        # A minority of OSM nodes carry a direct photo URL — a real picture
+        # of the actual place when it's there, used as a photo fallback for
+        # restaurants nobody has reviewed on EatRate yet.
+        osm_image = (tags.get("image") or "")[:500]
+
         places.append(
             {
                 "osm_id": f"node/{el['id']}",
@@ -101,85 +101,61 @@ def _fetch_cell_from_overpass(min_lat, min_lng, max_lat, max_lng):
                 "lat": el["lat"],
                 "lng": el["lon"],
                 "website_domain": domain,
+                "osm_image": osm_image,
             }
         )
     return places
 
 
 def sync_bbox(conn, min_lat, min_lng, max_lat, max_lng):
-    """Fetches any not-yet-cached grid cells touching this bbox from
-    Overpass, upserts them into `restaurants`, and returns every geolocated
-    restaurant in our DB within the bbox (cached ones included)."""
+    """Ensures the given bbox's restaurants are fetched (via one Overpass
+    call, reused across nearby requests within CACHE_TTL_DAYS) and returns
+    every geolocated restaurant in our DB within it."""
     if max_lat <= min_lat or max_lng <= min_lng:
         raise OsmError("Invalid bounding box.")
-
-    y0, y1 = math.floor(min_lat / CELL_SIZE_DEGREES), math.floor(max_lat / CELL_SIZE_DEGREES)
-    x0, x1 = math.floor(min_lng / CELL_SIZE_DEGREES), math.floor(max_lng / CELL_SIZE_DEGREES)
-    cell_count = (y1 - y0 + 1) * (x1 - x0 + 1)
-    if cell_count > MAX_CELLS_PER_REQUEST:
+    if (max_lat - min_lat) > MAX_BBOX_DEGREES or (max_lng - min_lng) > MAX_BBOX_DEGREES:
         raise OsmError("This area is too large to search at once.")
 
+    center_lat = (min_lat + max_lat) / 2
+    center_lng = (min_lng + max_lng) / 2
+    key = _snap_key(center_lat, center_lng)
+
     cutoff = (datetime.utcnow() - timedelta(days=CACHE_TTL_DAYS)).isoformat()
+    cached = conn.execute(
+        "SELECT fetched_at FROM map_cache WHERE cell_key = ?", (key,)
+    ).fetchone()
 
-    # Collect which cells actually need fetching first, then fetch all of
-    # them concurrently — these are I/O-bound network calls (waiting on
-    # Overpass), so MAX_NEW_FETCHES_PER_REQUEST cells fetched in parallel
-    # cost roughly one Overpass round-trip in wall-clock time instead of
-    # that many times over. All DB writes happen back on this thread after,
-    # since sqlite3 connections aren't safe to share across threads.
-    to_fetch = []
-    for cy in range(y0, y1 + 1):
-        for cx in range(x0, x1 + 1):
-            if len(to_fetch) >= MAX_NEW_FETCHES_PER_REQUEST:
-                break
-            key = _cell_key(cy, cx)
-            cached = conn.execute(
-                "SELECT fetched_at FROM map_cache WHERE cell_key = ?", (key,)
-            ).fetchone()
-            if cached and cached["fetched_at"] > cutoff:
-                continue
-            to_fetch.append((cy, cx, key))
-        if len(to_fetch) >= MAX_NEW_FETCHES_PER_REQUEST:
-            break
+    if not cached or cached["fetched_at"] <= cutoff:
+        try:
+            places = _fetch_bbox_from_overpass(min_lat, min_lng, max_lat, max_lng)
+        except OsmError:
+            # Leave uncached so the next request retries; still serve
+            # whatever's already in the DB for this area.
+            places = None
 
-    def fetch_one(cell):
-        cy, cx, key = cell
-        cell_min_lat, cell_max_lat = cy * CELL_SIZE_DEGREES, (cy + 1) * CELL_SIZE_DEGREES
-        cell_min_lng, cell_max_lng = cx * CELL_SIZE_DEGREES, (cx + 1) * CELL_SIZE_DEGREES
-        return key, _fetch_cell_from_overpass(cell_min_lat, cell_min_lng, cell_max_lat, cell_max_lng)
-
-    if to_fetch:
-        with ThreadPoolExecutor(max_workers=len(to_fetch)) as pool:
-            futures = {pool.submit(fetch_one, cell): cell for cell in to_fetch}
-            for future in as_completed(futures):
-                try:
-                    key, places = future.result()
-                except OsmError:
-                    # Leave this cell uncached so a later request retries
-                    # it; still serve whatever's already cached elsewhere.
-                    continue
-
-                for place in places:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO restaurants "
-                        "(name, cuisine, address, lat, lng, osm_id, source, website_domain) "
-                        "VALUES (?, ?, ?, ?, ?, ?, 'osm', ?)",
-                        (
-                            place["name"],
-                            place["cuisine"],
-                            place["address"],
-                            place["lat"],
-                            place["lng"],
-                            place["osm_id"],
-                            place["website_domain"],
-                        ),
-                    )
+        if places is not None:
+            for place in places:
                 conn.execute(
-                    "INSERT INTO map_cache (cell_key, fetched_at) VALUES (?, datetime('now')) "
-                    "ON CONFLICT(cell_key) DO UPDATE SET fetched_at = datetime('now')",
-                    (key,),
+                    "INSERT OR IGNORE INTO restaurants "
+                    "(name, cuisine, address, lat, lng, osm_id, source, website_domain, osm_image) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 'osm', ?, ?)",
+                    (
+                        place["name"],
+                        place["cuisine"],
+                        place["address"],
+                        place["lat"],
+                        place["lng"],
+                        place["osm_id"],
+                        place["website_domain"],
+                        place["osm_image"],
+                    ),
                 )
-                conn.commit()
+            conn.execute(
+                "INSERT INTO map_cache (cell_key, fetched_at) VALUES (?, datetime('now')) "
+                "ON CONFLICT(cell_key) DO UPDATE SET fetched_at = datetime('now')",
+                (key,),
+            )
+            conn.commit()
 
     return conn.execute(
         """

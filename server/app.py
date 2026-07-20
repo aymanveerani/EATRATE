@@ -67,6 +67,7 @@ def public_restaurant(row):
         "lng": row["lng"] if "lng" in keys else None,
         "soft_launch_partner": bool(row["soft_launch_partner"]) if "soft_launch_partner" in keys else False,
         "website_domain": row["website_domain"] if "website_domain" in keys else "",
+        "osm_image": row["osm_image"] if "osm_image" in keys else "",
     }
 
 
@@ -319,6 +320,7 @@ def nearby_restaurants(ctx):
 
     restaurant_ids = [r["id"] for r in rows]
     stats = {}
+    recent_photo = {}
     if restaurant_ids:
         placeholders = ",".join("?" * len(restaurant_ids))
         for r in conn.execute(
@@ -327,6 +329,14 @@ def nearby_restaurants(ctx):
             restaurant_ids,
         ):
             stats[r["restaurant_id"]] = {"post_count": r["post_count"], "avg_rating": round(r["avg_rating"], 1)}
+        # A real user-submitted photo of the place beats any stock/logo
+        # image — use the most recent one per restaurant, if any exist yet.
+        for r in conn.execute(
+            f"SELECT restaurant_id, photo_path FROM posts "
+            f"WHERE restaurant_id IN ({placeholders}) ORDER BY created_at DESC",
+            restaurant_ids,
+        ):
+            recent_photo.setdefault(r["restaurant_id"], r["photo_path"])
     conn.close()
 
     out = []
@@ -335,6 +345,8 @@ def nearby_restaurants(ctx):
         s = stats.get(r["id"], {"post_count": 0, "avg_rating": 0})
         item["post_count"] = s["post_count"]
         item["avg_rating"] = s["avg_rating"]
+        photo_path = recent_photo.get(r["id"])
+        item["photo_url"] = "/" + photo_path if photo_path else None
         out.append(item)
     ctx.send_json(HTTPStatus.OK, {"restaurants": out})
 
