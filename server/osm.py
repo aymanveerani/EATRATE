@@ -24,7 +24,13 @@ from datetime import datetime, timedelta
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 CELL_SIZE_DEGREES = 0.02  # ~2x2km grid cells — small enough that dense areas
 # (e.g. Manhattan) don't make a single cell's Overpass query time out
-MAX_CELLS_PER_REQUEST = 64  # caps a single viewport fetch to a ~16x16km area
+#
+# This caps total bbox *size*, not per-request work — that's bounded
+# separately by MAX_NEW_FETCHES_PER_REQUEST below, so it's safe to be
+# generous here. A fixed-radius "restaurants near you" search (~8km) needs
+# roughly 80-150 cells depending on latitude; a large area just fills in
+# its cache gradually over a few requests instead of failing outright.
+MAX_CELLS_PER_REQUEST = 400
 MAX_RESULTS_PER_CELL = 200
 CACHE_TTL_DAYS = 7
 REQUEST_TIMEOUT = 8  # Overpass is a shared free public instance; fail fast
@@ -98,7 +104,7 @@ def sync_bbox(conn, min_lat, min_lng, max_lat, max_lng):
     x0, x1 = math.floor(min_lng / CELL_SIZE_DEGREES), math.floor(max_lng / CELL_SIZE_DEGREES)
     cell_count = (y1 - y0 + 1) * (x1 - x0 + 1)
     if cell_count > MAX_CELLS_PER_REQUEST:
-        raise OsmError("Zoom in to see restaurants — this area is too large to load at once.")
+        raise OsmError("This area is too large to search at once.")
 
     cutoff = (datetime.utcnow() - timedelta(days=CACHE_TTL_DAYS)).isoformat()
     fetches_attempted = 0

@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS restaurants (
     lng REAL,
     osm_id TEXT,
     source TEXT NOT NULL DEFAULT 'user',
+    soft_launch_partner INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -49,6 +50,10 @@ CREATE TABLE IF NOT EXISTS business_claims (
     business_name TEXT NOT NULL,
     contact_email TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    trial_ends_at TEXT,
+    cached_insights TEXT,
+    insights_generated_at TEXT,
+    insights_post_count INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (restaurant_id) REFERENCES restaurants(id),
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
@@ -128,12 +133,24 @@ MIGRATIONS = [
     "ALTER TABLE restaurants ADD COLUMN lng REAL",
     "ALTER TABLE restaurants ADD COLUMN osm_id TEXT",
     "ALTER TABLE restaurants ADD COLUMN source TEXT NOT NULL DEFAULT 'user'",
+    "ALTER TABLE restaurants ADD COLUMN soft_launch_partner INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE business_claims ADD COLUMN trial_ends_at TEXT",
+    "ALTER TABLE business_claims ADD COLUMN cached_insights TEXT",
+    "ALTER TABLE business_claims ADD COLUMN insights_generated_at TEXT",
+    "ALTER TABLE business_claims ADD COLUMN insights_post_count INTEGER NOT NULL DEFAULT 0",
 ]
 
 # Must run *after* MIGRATIONS: this index references restaurants.osm_id,
 # which doesn't exist yet on a pre-existing database until the ALTER TABLE
 # above has run. Running it as part of SCHEMA's executescript (before
 # migrations) crashes on any database that predates the osm_id column.
+#
+# Each of these is executed individually and any failure is logged rather
+# than raised (see init_db), so a bad statement here is never fatal.
+#
+# Note: there is deliberately no unique constraint on posts(user_id,
+# restaurant_id) — users are allowed to review the same restaurant multiple
+# times, so nothing should ever enforce one-review-per-restaurant here.
 POST_MIGRATION_STATEMENTS = [
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_restaurants_osm_id ON restaurants(osm_id) WHERE osm_id IS NOT NULL",
 ]
@@ -158,6 +175,13 @@ def init_db():
             if "duplicate column" not in str(e).lower():
                 raise
     for statement in POST_MIGRATION_STATEMENTS:
-        conn.execute(statement)
+        try:
+            conn.execute(statement)
+        except sqlite3.Error as e:
+            # Covers OperationalError (e.g. missing column) and
+            # IntegrityError (e.g. pre-existing duplicate rows that violate
+            # a new UNIQUE index) — these are advisory indexes, not the only
+            # thing enforcing their rule, so a failure here is never fatal.
+            print(f"[WARN] Skipping post-migration statement (non-fatal): {statement} -> {e}", flush=True)
     conn.commit()
     conn.close()

@@ -39,13 +39,27 @@
     .stat-row { display: flex; gap: 16px; margin-top: 10px; }
     .stat-row .stat-value { font-weight: 800; font-size: 20px; }
     .stat-row .stat-label { color: var(--muted); font-size: 12px; }
+    .insights-card {
+      border: 1px solid var(--accent);
+      background: var(--accent-soft);
+    }
+    .insights-card .insights-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 700;
+      font-size: 13px;
+      color: var(--accent);
+      margin-bottom: 8px;
+    }
+    .insights-card p { margin: 0; font-size: 14px; line-height: 1.5; }
   </style>
 </head>
 <body>
   <div class="app">
     <header class="topbar">
       <div class="brand"><div class="mark">🍴</div><h1>Business</h1></div>
-      <a href="/map.html" class="secondary" style="padding:8px 12px; font-size:13px; text-decoration:none; border-radius:12px; border:1px solid var(--border); color:var(--ink);">Claim another</a>
+      <a href="/index.html" class="secondary" style="padding:8px 12px; font-size:13px; text-decoration:none; border-radius:12px; border:1px solid var(--border); color:var(--ink);">Claim another</a>
     </header>
     <main id="content" class="loading">Loading…</main>
     <div id="tabbar-slot"></div>
@@ -67,6 +81,22 @@
       return `<div class="chart">${bars}</div><div style="color:var(--muted-dim); font-size:11px; text-align:center;">Avg rating by week (last ${recent.length})</div>`;
     }
 
+    function renderTrialBanner(trialEndsAt) {
+      if (!trialEndsAt) return "";
+      const end = new Date(trialEndsAt.replace(" ", "T") + "Z");
+      const daysLeft = Math.ceil((end.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+      if (daysLeft > 0) {
+        return `
+          <div class="badge pending" style="margin-top:8px;">
+            🎁 Free trial — ${daysLeft} day${daysLeft === 1 ? "" : "s"} left
+          </div>`;
+      }
+      return `
+        <div class="badge" style="margin-top:8px; background:var(--danger-soft); color:var(--danger);">
+          Trial ended
+        </div>`;
+    }
+
     function renderBusiness(b) {
       const photosHtml = b.posts.length
         ? `<div class="photo-grid">${b.posts.map((p) => `<a href="/restaurant.html?id=${b.restaurant_id}"><img src="${p.photo_url}" loading="lazy" /></a>`).join("")}</div>`
@@ -78,6 +108,7 @@
             <div>
               <div style="font-weight:800; font-size:18px;">${escapeHtml(b.restaurant_name)}</div>
               <div style="color:var(--muted); font-size:13px;">${escapeHtml(b.cuisine || "Restaurant")}${b.address ? " · " + escapeHtml(b.address) : ""}</div>
+              ${renderTrialBanner(b.trial_ends_at)}
             </div>
             <a href="/restaurant.html?id=${b.restaurant_id}" style="color:var(--accent); font-size:13px; font-weight:600; text-decoration:none; white-space:nowrap;">View page →</a>
           </div>
@@ -87,6 +118,10 @@
             <div><div class="stat-value">${b.total_cheers}</div><div class="stat-label">Cheers</div></div>
           </div>
           ${renderChart(b.weekly)}
+        </div>
+        <div class="card insights-card">
+          <div class="insights-label">✨ AI Insights</div>
+          <p>${escapeHtml(b.insights)}</p>
         </div>
         <div class="card">
           <h3 style="margin-top:0;">Customer photos</h3>
@@ -105,7 +140,7 @@
         const content = document.getElementById("content");
         if (businesses.length === 0) {
           content.className = "empty-state";
-          content.innerHTML = `You haven't claimed any restaurants yet.<br/><a href="/map.html" style="color:var(--accent); font-weight:600;">Find yours on the map →</a>`;
+          content.innerHTML = `You haven't claimed any restaurants yet.<br/><a href="/index.html" style="color:var(--accent); font-weight:600;">Find yours in the feed →</a>`;
           return;
         }
         content.className = "";

@@ -55,24 +55,50 @@
       document.getElementById("redeem-modal").style.display = "block";
     }
 
+    let redemptionEnabled = true;
+
+    function comingSoonBanner() {
+      return `
+        <div class="card" style="border:1px dashed var(--border); background:var(--card-2);">
+          <div style="font-weight:700; font-size:14px;">🚧 Redemption launches with our soft-launch partners</div>
+          <div style="color:var(--muted); font-size:13px; margin-top:4px;">
+            Keep earning — your rewards are saved. Redemption opens once we've picked the restaurants
+            for our soft launch.
+          </div>
+        </div>
+      `;
+    }
+
     async function loadRewards(feedbackMessage) {
-      const { rewards } = await api.get("/api/rewards");
+      const { rewards, redemption_enabled } = await api.get("/api/rewards");
+      redemptionEnabled = redemption_enabled;
       const list = document.getElementById("list");
       const feedbackHtml = feedbackMessage
         ? `<div class="success-msg" style="margin-bottom:12px;">${escapeHtml(feedbackMessage)}</div>`
         : "";
+      const bannerHtml = redemptionEnabled ? "" : comingSoonBanner();
 
       if (rewards.length === 0) {
         list.className = "empty-state";
-        list.innerHTML = feedbackHtml + "No rewards yet.<br/>Share 5 posts to earn your first $10 gift card.";
+        list.innerHTML =
+          feedbackHtml + bannerHtml + "No rewards yet.<br/>Share 5 posts to earn your first $10 gift card.";
         return;
       }
       list.className = "";
       list.innerHTML =
         feedbackHtml +
+        bannerHtml +
         rewards
           .map((r) => {
             if (r.review_status === "pending") {
+              if (!redemptionEnabled) {
+                return `
+                  <div class="card reward-card">
+                    <div class="amount">${centsToDollars(r.amount_cents)}</div>
+                    <span class="badge pending">Earned — redemption coming soon</span>
+                  </div>
+                `;
+              }
               return `
                 <div class="card reward-card">
                   <div style="display:flex; justify-content:space-between; align-items:center;">

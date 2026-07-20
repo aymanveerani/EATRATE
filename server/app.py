@@ -1,7 +1,9 @@
 import hmac
 import json
+import math
 import mimetypes
 import os
+import random
 import re
 import socketserver
 from datetime import datetime
@@ -10,7 +12,8 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
-from server import admin, auth
+from server import admin, ai_insights, auth
+from server.ai_insights import generate_insights
 from server.db import get_connection, init_db, UPLOADS_DIR
 from server.giftcards import issue_gift_card
 from server.notify import notify_report
@@ -20,13 +23,16 @@ from server.photos import PhotoError, save_photo
 STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
 REWARD_EVERY_N_POSTS = 5
 REWARD_AMOUNT_CENTS = 1000
+TRIAL_DAYS = 90  # free trial length for a newly claimed business dashboard
+SOFT_LAUNCH_PARTNER_LIMIT = 5  # advisory only — shown in the admin panel
 
-# Anti-farming: a bot-speed throttle (1 hour) and a hard daily cap (rolling
-# 24h), both per account. The 24h cap subsumes the 1h one in normal use, but
-# they're kept as two independent checks with distinct messages so the
-# 1-hour throttle still holds even if the daily cap is ever loosened.
-MIN_SECONDS_BETWEEN_POSTS = 60 * 60
-MAX_POSTS_WINDOW_SECONDS = 24 * 60 * 60
+# Anti-farming: one post per account per rolling 24h. A user can review the
+# same restaurant as many times as they like (no per-restaurant limit) — the
+# only cap is posting frequency. The 10-minute throttle is redundant with a
+# 1/day cap in normal use but kept as a cheap backstop against clock-skew
+# edge cases right at the day boundary.
+MIN_SECONDS_BETWEEN_POSTS = 10 * 60
+MAX_POSTS_PER_DAY = 1
 
 ROUTES = []
 
@@ -59,6 +65,7 @@ def public_restaurant(row):
         "address": row["address"],
         "lat": row["lat"] if "lat" in keys else None,
         "lng": row["lng"] if "lng" in keys else None,
+        "soft_launch_partner": bool(row["soft_launch_partner"]) if "soft_launch_partner" in keys else False,
     }
 
 
@@ -276,31 +283,39 @@ def get_restaurant(ctx, restaurant_id):
 
 
 # ---------------------------------------------------------------------------
-# Map (live OpenStreetMap-backed restaurant search) + business claims
+# Nearby restaurants (live OpenStreetMap-backed) + business claims
 # ---------------------------------------------------------------------------
 
-@route("GET", r"/api/map/restaurants")
-def map_restaurants(ctx):
+NEARBY_RADIUS_KM = 5 * 1.60934  # exactly 5 miles
+NEARBY_RESULT_CAP = 18
+
+
+@route("GET", r"/api/restaurants/nearby")
+def nearby_restaurants(ctx):
     ctx.require_user()
     q = parse_qs(ctx.parsed_url.query)
     try:
-        min_lat = float(q["min_lat"][0])
-        min_lng = float(q["min_lng"][0])
-        max_lat = float(q["max_lat"][0])
-        max_lng = float(q["max_lng"][0])
+        lat = float(q["lat"][0])
+        lng = float(q["lng"][0])
     except (KeyError, ValueError, IndexError):
-        raise ApiError(400, "min_lat, min_lng, max_lat, max_lng query params are required.")
+        raise ApiError(400, "lat and lng query params are required.")
+
+    lat_delta = NEARBY_RADIUS_KM / 111.0
+    lng_delta = NEARBY_RADIUS_KM / (111.0 * max(math.cos(math.radians(lat)), 0.01))
 
     conn = get_connection()
     try:
-        rows = sync_bbox(conn, min_lat, min_lng, max_lat, max_lng)
+        rows = sync_bbox(conn, lat - lat_delta, lng - lng_delta, lat + lat_delta, lng + lng_delta)
     except OsmError as e:
         conn.close()
         raise ApiError(400, str(e))
 
+    rows = list(rows)
+    random.shuffle(rows)
+    rows = rows[:NEARBY_RESULT_CAP]
+
     restaurant_ids = [r["id"] for r in rows]
     stats = {}
-    claimed_ids = set()
     if restaurant_ids:
         placeholders = ",".join("?" * len(restaurant_ids))
         for r in conn.execute(
@@ -309,13 +324,6 @@ def map_restaurants(ctx):
             restaurant_ids,
         ):
             stats[r["restaurant_id"]] = {"post_count": r["post_count"], "avg_rating": round(r["avg_rating"], 1)}
-        claimed_ids = {
-            r["restaurant_id"]
-            for r in conn.execute(
-                f"SELECT restaurant_id FROM business_claims WHERE restaurant_id IN ({placeholders})",
-                restaurant_ids,
-            )
-        }
     conn.close()
 
     out = []
@@ -324,7 +332,6 @@ def map_restaurants(ctx):
         s = stats.get(r["id"], {"post_count": 0, "avg_rating": 0})
         item["post_count"] = s["post_count"]
         item["avg_rating"] = s["avg_rating"]
-        item["claimed"] = r["id"] in claimed_ids
         out.append(item)
     ctx.send_json(HTTPStatus.OK, {"restaurants": out})
 
@@ -341,10 +348,13 @@ def claim_restaurant(ctx, restaurant_id):
         raise ApiError(400, "A valid contact email is required.")
 
     conn = get_connection()
-    restaurant = conn.execute("SELECT id FROM restaurants WHERE id = ?", (restaurant_id,)).fetchone()
+    restaurant = conn.execute("SELECT * FROM restaurants WHERE id = ?", (restaurant_id,)).fetchone()
     if restaurant is None:
         conn.close()
         raise ApiError(404, "Restaurant not found.")
+    if not restaurant["soft_launch_partner"]:
+        conn.close()
+        raise ApiError(403, "This restaurant isn't part of our soft launch yet — check back soon!")
 
     existing = conn.execute(
         "SELECT id FROM business_claims WHERE restaurant_id = ?", (restaurant_id,)
@@ -354,7 +364,8 @@ def claim_restaurant(ctx, restaurant_id):
         raise ApiError(409, "This restaurant has already been claimed.")
 
     conn.execute(
-        "INSERT INTO business_claims (restaurant_id, user_id, business_name, contact_email) VALUES (?, ?, ?, ?)",
+        "INSERT INTO business_claims (restaurant_id, user_id, business_name, contact_email, trial_ends_at) "
+        f"VALUES (?, ?, ?, ?, datetime('now', '+{TRIAL_DAYS} days'))",
         (restaurant_id, user["id"], business_name, contact_email),
     )
     conn.commit()
@@ -400,6 +411,20 @@ def business_dashboard(ctx):
             (rid,),
         ).fetchall()
 
+        # Insights are regenerated only when the review count has changed
+        # since the last generation — avoids paying for an API call (when
+        # ANTHROPIC_API_KEY is set) on every dashboard page view.
+        if claim["cached_insights"] is None or claim["insights_post_count"] != len(posts):
+            insights = generate_insights(claim["restaurant_name"], posts)
+            conn.execute(
+                "UPDATE business_claims SET cached_insights = ?, insights_generated_at = datetime('now'), "
+                "insights_post_count = ? WHERE id = ?",
+                (insights, len(posts), claim["id"]),
+            )
+            conn.commit()
+        else:
+            insights = claim["cached_insights"]
+
         out.append(
             {
                 "restaurant_id": rid,
@@ -410,6 +435,9 @@ def business_dashboard(ctx):
                 "post_count": len(posts),
                 "avg_rating": round(sum(p["rating"] for p in posts) / len(posts), 1) if posts else 0,
                 "total_cheers": sum(p["cheers_count"] for p in posts),
+                "trial_ends_at": claim["trial_ends_at"],
+                "insights": insights,
+                "ai_insights_mode": "live" if ai_insights.ANTHROPIC_API_KEY else "simulated",
                 "weekly": [
                     {"week": w["week"], "post_count": w["post_count"], "avg_rating": round(w["avg_rating"], 1)}
                     for w in weekly
@@ -450,18 +478,23 @@ def create_post(ctx):
         elapsed = (datetime.utcnow() - last_time).total_seconds()
         if elapsed < MIN_SECONDS_BETWEEN_POSTS:
             conn.close()
-            raise ApiError(429, "You're posting too fast — please wait at least an hour between posts.")
-        if elapsed < MAX_POSTS_WINDOW_SECONDS:
-            conn.close()
-            raise ApiError(429, "You can only share one post per day during our pilot. Come back tomorrow!")
+            raise ApiError(429, "You're posting too fast — please wait at least 10 minutes between posts.")
+
+    day_count = conn.execute(
+        "SELECT COUNT(*) AS c FROM posts WHERE user_id = ? AND created_at > datetime('now', '-1 day')",
+        (user["id"],),
+    ).fetchone()["c"]
+    if day_count >= MAX_POSTS_PER_DAY:
+        conn.close()
+        raise ApiError(429, "You can only share one post per day. Come back tomorrow!")
+
+    restaurant_id = find_or_create_restaurant(conn, body.get("restaurant_name"))
 
     try:
         photo_path = save_photo(body.get("photo"))
     except PhotoError as e:
         conn.close()
         raise ApiError(400, str(e))
-
-    restaurant_id = find_or_create_restaurant(conn, body.get("restaurant_name"))
 
     conn.execute(
         "INSERT INTO posts (user_id, restaurant_id, photo_path, rating, caption) "
@@ -667,12 +700,21 @@ def list_rewards(ctx):
         (user["id"],),
     ).fetchall()
     conn.close()
-    ctx.send_json(HTTPStatus.OK, {"rewards": [public_reward(r) for r in rows]})
+    ctx.send_json(
+        HTTPStatus.OK,
+        {"rewards": [public_reward(r) for r in rows], "redemption_enabled": admin.REDEMPTION_ENABLED},
+    )
 
 
 @route("POST", r"/api/rewards/(?P<reward_id>\d+)/redeem")
 def redeem_reward(ctx, reward_id):
     user = ctx.require_user()
+    if not admin.REDEMPTION_ENABLED:
+        raise ApiError(
+            403,
+            "Gift card redemption isn't open yet — it launches with our soft-launch partner "
+            "restaurants. Your reward is saved and you'll be able to redeem it soon.",
+        )
     body = ctx.json_body()
     try:
         restaurant_id = int(body.get("restaurant_id"))
@@ -761,6 +803,56 @@ def require_admin(ctx):
     provided = ctx.handler.headers.get("X-Admin-Secret", "")
     if not hmac.compare_digest(provided, admin.ADMIN_SECRET):
         raise ApiError(401, "Invalid admin secret.")
+
+
+@route("GET", r"/api/admin/restaurants/search")
+def admin_search_restaurants(ctx):
+    require_admin(ctx)
+    q = parse_qs(ctx.parsed_url.query)
+    query = (q.get("q", [""])[0] or "").strip()
+
+    conn = get_connection()
+    if query:
+        rows = conn.execute(
+            "SELECT * FROM restaurants WHERE name LIKE ? ORDER BY name COLLATE NOCASE LIMIT 25",
+            (f"%{query}%",),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM restaurants ORDER BY soft_launch_partner DESC, name COLLATE NOCASE LIMIT 25"
+        ).fetchall()
+    partner_count = conn.execute(
+        "SELECT COUNT(*) AS c FROM restaurants WHERE soft_launch_partner = 1"
+    ).fetchone()["c"]
+    conn.close()
+    ctx.send_json(
+        HTTPStatus.OK,
+        {
+            "restaurants": [public_restaurant(r) for r in rows],
+            "soft_launch_partner_count": partner_count,
+            "soft_launch_partner_limit": SOFT_LAUNCH_PARTNER_LIMIT,
+        },
+    )
+
+
+@route("POST", r"/api/admin/restaurants/(?P<restaurant_id>\d+)/soft-launch-partner")
+def admin_set_soft_launch_partner(ctx, restaurant_id):
+    require_admin(ctx)
+    body = ctx.json_body()
+    enabled = bool(body.get("enabled"))
+
+    conn = get_connection()
+    restaurant = conn.execute("SELECT * FROM restaurants WHERE id = ?", (restaurant_id,)).fetchone()
+    if restaurant is None:
+        conn.close()
+        raise ApiError(404, "Restaurant not found.")
+
+    conn.execute(
+        "UPDATE restaurants SET soft_launch_partner = ? WHERE id = ?", (1 if enabled else 0, restaurant_id)
+    )
+    conn.commit()
+    conn.close()
+    ctx.send_json(HTTPStatus.OK, {"ok": True})
 
 
 @route("GET", r"/api/admin/redemptions")

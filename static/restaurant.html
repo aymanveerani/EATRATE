@@ -32,9 +32,12 @@
         ? restaurant.posts.map(renderPostCard).join("")
         : `<div class="empty-state">No one's shared this place yet.</div>`;
 
-      const claimHtml = restaurant.claimed
-        ? `<div class="badge redeemed" style="margin-top:8px;">✓ Claimed by ${escapeHtml(restaurant.business_name)}</div>`
-        : `<a href="/claim.html?restaurant_id=${restaurant.id}&name=${encodeURIComponent(restaurant.name)}" style="display:block; margin-top:8px; color:var(--accent); font-size:13px; font-weight:600; text-decoration:none;">Are you the owner? Claim this listing →</a>`;
+      let claimHtml = "";
+      if (restaurant.claimed) {
+        claimHtml = `<div class="badge redeemed" style="margin-top:8px;">✓ Claimed by ${escapeHtml(restaurant.business_name)}</div>`;
+      } else if (restaurant.soft_launch_partner) {
+        claimHtml = `<a href="/claim.html?restaurant_id=${restaurant.id}&name=${encodeURIComponent(restaurant.name)}" style="display:block; margin-top:8px; color:var(--accent); font-size:13px; font-weight:600; text-decoration:none;">Are you the owner? Claim this listing →</a>`;
+      }
 
       document.getElementById("content").innerHTML = `
         <div class="card">

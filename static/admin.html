@@ -28,6 +28,21 @@
 
       <div id="panel" style="display:none;">
         <div class="card">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <div>
+              <div style="font-weight:700;">Soft-launch partners</div>
+              <div style="color:var(--muted); font-size:13px;">Only these restaurants can be claimed for a business dashboard</div>
+            </div>
+            <div id="partner-count" style="font-size:18px; font-weight:800;">—</div>
+          </div>
+          <form id="restaurant-search-form" style="flex-direction:row; gap:8px;">
+            <input type="text" id="restaurant-search-input" placeholder="Search restaurants by name…" style="flex:1;" />
+            <button type="submit" class="primary" style="width:auto; padding:12px 18px;">Search</button>
+          </form>
+          <div id="restaurant-search-results" style="margin-top:10px;"></div>
+        </div>
+
+        <div class="card">
           <div style="display:flex; justify-content:space-between; align-items:center;">
             <div>
               <div style="font-weight:700;">Manual review slots</div>
@@ -82,6 +97,65 @@
       document.getElementById("panel").style.display = "block";
       document.getElementById("lock-btn").style.display = "block";
     }
+
+    async function searchRestaurants(query) {
+      const { restaurants, soft_launch_partner_count, soft_launch_partner_limit } = await adminFetch(
+        `/api/admin/restaurants/search?q=${encodeURIComponent(query)}`
+      );
+      document.getElementById("partner-count").textContent = `${soft_launch_partner_count} / ${soft_launch_partner_limit}`;
+
+      const box = document.getElementById("restaurant-search-results");
+      if (restaurants.length === 0) {
+        box.className = "empty-state";
+        box.textContent = "No restaurants found.";
+        return;
+      }
+      box.className = "";
+      box.innerHTML = restaurants
+        .map(
+          (r) => `
+          <div class="friend-row">
+            <div>
+              <div class="friend-name">${escapeHtml(r.name)}</div>
+              <div class="friend-meta">${escapeHtml(r.cuisine || "Restaurant")}${r.address ? " · " + escapeHtml(r.address) : ""}</div>
+            </div>
+            <button
+              class="${r.soft_launch_partner ? "secondary" : "primary"}"
+              style="padding:6px 12px; font-size:12px; flex-shrink:0;"
+              data-toggle-partner-id="${r.id}"
+              data-currently-partner="${r.soft_launch_partner ? "1" : "0"}"
+            >${r.soft_launch_partner ? "Remove" : "Add as partner"}</button>
+          </div>
+        `
+        )
+        .join("");
+    }
+
+    document.getElementById("restaurant-search-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      try {
+        await searchRestaurants(document.getElementById("restaurant-search-input").value);
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+
+    document.getElementById("restaurant-search-results").addEventListener("click", async (e) => {
+      const btn = e.target.closest("[data-toggle-partner-id]");
+      if (!btn) return;
+      const currentlyPartner = btn.dataset.currentlyPartner === "1";
+      btn.disabled = true;
+      try {
+        await adminFetch(`/api/admin/restaurants/${btn.dataset.togglePartnerId}/soft-launch-partner`, {
+          method: "POST",
+          body: JSON.stringify({ enabled: !currentlyPartner }),
+        });
+        await searchRestaurants(document.getElementById("restaurant-search-input").value);
+      } catch (err) {
+        alert(err.message);
+        btn.disabled = false;
+      }
+    });
 
     async function loadRedemptions() {
       const { redemptions, manual_review_used, manual_review_limit } = await adminFetch("/api/admin/redemptions");
@@ -177,6 +251,7 @@
 
     async function unlock() {
       try {
+        await searchRestaurants("");
         await loadRedemptions();
         await loadReports();
         showPanel();

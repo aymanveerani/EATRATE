@@ -81,50 +81,78 @@ registrar; DNS propagation usually takes a few minutes to a few hours.
 - The reward amount ($10) and the trigger count (5) are constants in
   [server/app.py](server/app.py) (`REWARD_EVERY_N_POSTS`, `REWARD_AMOUNT_CENTS`).
 
-## Map & business dashboard
+## Restaurants near you (feed, not a separate map)
 
-**There is no "every restaurant in America" dataset here** — that isn't free, and isn't legal to
-bulk-store from Google Places or Yelp without a paid contract. Instead, [`map.html`](static/map.html)
-works the way real map apps do: it fetches real restaurants for whatever viewport you're currently
-looking at from **OpenStreetMap's Overpass API** (free, keyless), the same way Yelp/Google Maps
-load results as you pan instead of downloading the planet up front.
+There's no standalone map page — an earlier version had one (an interactive Leaflet map), but it
+was replaced with a horizontally-scrolling "Restaurants near you" section built directly into the
+feed (`index.html`), which is both simpler and looks a lot more like a native app than a map
+widget bolted onto a review app.
 
-- [server/osm.py](server/osm.py) fetches a coarse grid of ~2×2km cells covering the requested
-  viewport, caching each cell in `map_cache` for 7 days so repeated visits to the same area don't
-  re-hit Overpass. Every fetched place becomes a real row in `restaurants` (matched on OSM's node
-  id via a unique index, so re-fetching never duplicates it) — it's the same restaurant entity
-  users can post about and businesses can claim, not a separate read-only layer.
+**There is no "every restaurant in America" dataset either** — that isn't free, and isn't legal to
+bulk-store from Google Places or Yelp without a paid contract. Instead it asks the browser for the
+user's location and fetches real restaurants within a 5-mile radius from **OpenStreetMap's
+Overpass API** (free, keyless):
+
+- [server/osm.py](server/osm.py) fetches a coarse grid of ~2×2km cells covering that radius,
+  caching each cell in `map_cache` for 7 days so repeated visits from the same area don't re-hit
+  Overpass. Every fetched place becomes a real row in `restaurants` (matched on OSM's node id via
+  a unique index, so re-fetching never duplicates it) — it's the same restaurant entity users can
+  post about and businesses can claim, not a separate read-only layer.
 - Overpass is a shared free public service with variable load — occasional slow or failed cells
   are expected, not a bug. Failed cells are simply left uncached and retried on the next request;
-  a single map load is bounded to a handful of live Overpass calls so one dense area (found this
-  the hard way testing Manhattan, which 504s on naive queries) can't hang the page.
+  a single request is bounded to a handful of live Overpass calls (`MAX_NEW_FETCHES_PER_REQUEST`
+  in `server/osm.py`) so one dense area can't hang the page — it self-heals by filling in
+  progressively over a few page loads instead.
 - Coverage reflects OpenStreetMap's crowd-sourced data: good to very good in cities, sparser in
   small towns and rural areas. That's the real tradeoff of "free and keyless" vs. a paid provider.
-- **Claiming a restaurant** ([claim.html](static/claim.html)) is self-service for this pilot — no
-  identity verification, first claim wins (`business_claims.restaurant_id` is unique). The claim
-  form says this explicitly. A claimed restaurant gets a
-  [business.html](static/business.html) dashboard: average rating, review count, total cheers, a
-  week-by-week rating trend, and every customer photo — all scoped to restaurants *that user* has
-  claimed via `GET /api/business/dashboard`.
-- Restaurant pages show a "Claimed by [business]" badge once claimed, or a "claim this listing"
-  link if not.
+- If the user declines location access, the section shows an "Enable location" prompt instead of
+  guessing a location — there's no fallback to some other city.
+
+## Business claiming, soft launch, and AI insights
+
+Claiming isn't open to every restaurant — only the ones chosen for the soft launch. An operator
+marks up to a handful of restaurants as **soft-launch partners** from the admin panel
+(search box + toggle in [`admin.html`](static/admin.html), backed by
+`restaurants.soft_launch_partner` and `POST /api/admin/restaurants/:id/soft-launch-partner`).
+Only those restaurants show a "claim this listing" link on their page or accept a claim via the
+API — everyone else is just reviewable, same as before.
+
+- **Claiming** ([claim.html](static/claim.html)) is self-service for this pilot — no identity
+  verification, first claim wins (`business_claims.restaurant_id` is unique). The form says this
+  explicitly.
+- **3-month free trial.** Claiming starts a `TRIAL_DAYS` (90, in `server/app.py`) countdown stored
+  as `business_claims.trial_ends_at`, shown on the dashboard as "Free trial — N days left" (or
+  "Trial ended" once it passes). Nothing is billed automatically — there's no payment integration
+  here, this just tracks and displays the trial window from the business plan.
+- **AI insights.** [server/ai_insights.py](server/ai_insights.py) generates a short, restaurant-
+  specific summary from real review data — same simulated/live pattern as gift cards and report
+  emails. By default it's a heuristic summary (average rating, a trend note, most-mentioned words
+  in captions) with no API cost. Set `ANTHROPIC_API_KEY` to have it call the real Claude API for a
+  genuinely AI-written summary instead; if that call fails for any reason it falls back to the
+  heuristic rather than breaking the dashboard. Insights are cached in `business_claims` and only
+  regenerated when the review count changes, so a live API key isn't billed on every page view.
+- [business.html](static/business.html) ties it together: average rating, review count, total
+  cheers, a week-by-week rating trend chart, the AI insights card, the trial badge, and every
+  customer photo — all scoped to restaurants *that user* has claimed via
+  `GET /api/business/dashboard`.
 
 ## Trust & safety (pilot compliance)
 
 Added for the pilot launch, since reviewers are being paid to post:
 
-- **Rate limiting.** Two independent checks per account, both in `create_post()`
-  ([server/app.py](server/app.py)): no more than one post per hour (blocks scripted/bot-speed
-  posting), and no more than one post per rolling 24 hours (blocks farming toward the 5-post
-  reward). Violating either returns `429` with a message telling the user when they can try again.
-- **Manual review on the first 30 redemptions.** The first `MANUAL_REVIEW_LIMIT` (30, in
-  [server/admin.py](server/admin.py)) reward redemptions platform-wide go into an `under_review`
-  state instead of instantly issuing a gift card — `POST /api/rewards/:id/redeem` returns
-  `{"under_review": true}` and no code. An operator approves or rejects each one from
-  [`/admin.html`](static/admin.html), gated by the `ADMIN_SECRET` env var (sent as an
-  `X-Admin-Secret` header, checked with `hmac.compare_digest`). The 30-count check runs inside a
-  `BEGIN IMMEDIATE` transaction so two simultaneous redemptions can't both slip in as slot #30.
-  Once the 30 are used up, redemption goes back to instant auto-issuance.
+- **Rate limiting.** One post per account per rolling 24 hours (`MAX_POSTS_PER_DAY` in
+  `server/app.py`) — a user can post about the same restaurant as many times as they like across
+  different days, there's no per-restaurant cap. A 10-minute-between-posts throttle also exists as
+  a cheap backstop against clock-skew edge cases right at the day boundary; it's redundant with
+  the daily cap in normal use. Violating either returns `429` with a message telling the user when
+  they can try again.
+- **Manual review on the first 30 redemptions** — currently moot in practice since redemption is
+  switched off entirely (see below), but the mechanism is still in place for when it's turned back
+  on. The first `MANUAL_REVIEW_LIMIT` (30, in [server/admin.py](server/admin.py)) reward
+  redemptions platform-wide would go into an `under_review` state instead of instantly issuing a
+  gift card, approved or rejected from [`/admin.html`](static/admin.html). The 30-count check runs
+  inside a `BEGIN IMMEDIATE` transaction so two simultaneous redemptions can't both slip in as
+  slot #30.
 - **Report flag.** Every post has a 🚩 button that opens a report form
   (`POST /api/posts/:id/report`). Every report is stored in the `reports` table regardless of
   whether email is configured, and also triggers a notification via
@@ -139,12 +167,23 @@ Added for the pilot launch, since reviewers are being paid to post:
   to the *sentiment* of a review, not incentives themselves, and nothing in this app's reward
   logic looks at `rating` before granting a reward.
 
-**New environment variables** (all optional — the app runs in a fully simulated/no-op mode for
-each until you set them):
+## Gift card redemption: switched off for now
+
+Users still earn rewards on their 5th post — `users.post_count` and the reward-creation logic are
+untouched — but `POST /api/rewards/:id/redeem` returns `403` until `REDEMPTION_ENABLED=true` is
+set (`server/admin.py`). The rewards page shows "Earned — redemption coming soon" instead of a
+Redeem button. This matches the plan to only allow redemption at the specific restaurants chosen
+for the soft launch, which hasn't been decided yet — flip the env var on once it has been, no code
+change needed.
+
+**Environment variables** (all optional — the app runs in a fully simulated/no-op mode for each
+until you set them):
 
 | Variable | Purpose | If unset |
 |---|---|---|
 | `ADMIN_SECRET` | Unlocks `/admin.html` and the `/api/admin/*` endpoints | Admin panel returns `503`, refuses all access |
+| `REDEMPTION_ENABLED` | Turns gift card redemption back on | Redemption returns `403` |
+| `ANTHROPIC_API_KEY` | Real AI-generated business insights | Falls back to a heuristic summary |
 | `REPORT_EMAIL_TO` | Where report notifications get sent | — |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASSWORD` | Credentials for sending that email | Reports are logged to stdout instead of emailed (still saved in the DB either way) |
 
@@ -165,9 +204,13 @@ Both curl (fast, precise) and an actual browser (real rendering, real clicks) we
 
 **Via curl** — signup/login/logout/session guards, friend add with self/duplicate/unknown-email
 rejection (400/409/404) and bidirectional visibility, posting a photo (base64-decoded and written
-to `static/uploads/`, served back over HTTP), 5 posts triggering a reward on the 5th, redemption
-issuing a gift code and blocking double-redemption (409), a non-friend correctly blocked from
-cheering a post (403), and an isolated user correctly seeing an empty feed.
+to disk, served back over HTTP), 5 posts triggering a reward on the 5th, a non-friend correctly
+blocked from cheering a post (403), and an isolated user correctly seeing an empty feed. Later
+rounds verified: the 1/day + 10-minute rate limits and confirmed same-restaurant reposting is
+allowed, the soft-launch claim gate (403 on a non-partner restaurant, 201 once marked a partner),
+the 90-day trial date computing correctly, AI insights generating and caching correctly (no
+regeneration on an unchanged review count), and redemption returning 403 with
+`REDEMPTION_ENABLED` unset while reward-earning still works.
 
 **Via live browser** (`preview_start` + screenshots/clicks, project relocated to `~/eatrate` to
 get around the `~/Downloads` sandbox restriction) — signed up, walked through the camera prompt,
@@ -177,11 +220,23 @@ restaurant/rating/caption, shared it, confirmed the post rendered correctly in t
 working photo, cheered it and watched the count update live, added a friend and saw them appear
 in the friends list, opened the restaurant detail page and confirmed it matched the post to the
 existing seeded restaurant instead of creating a duplicate, checked the profile photo grid, and
-ran a full reward-to-redemption cycle ending in a visible gift code.
+ran a full reward-to-redemption cycle ending in a visible gift code (before redemption was later
+switched off). Also verified live: the "restaurants near you" feed section with mocked geolocation
+returning real nearby OSM restaurants with cuisine icons, and the business dashboard showing the
+trial badge, AI insights card, and rating trend chart together.
 
-**Not verified**: a real phone camera (this environment has no camera hardware) and the actual
-Beer Buddy app's UI firsthand (verified via its App Store/Play Store listings and product
-description instead, per the earlier research step).
+**A real crash was found and fixed via this testing approach**, not caught by chance: a schema
+migration created an index referencing a column before the step that adds that column had run,
+which crashed the server on every startup against the real production database. It was caught by
+reconstructing a copy of production's actual schema locally and running the startup code against
+it — the same technique is now used before every schema change in this project (see
+`server/db.py`'s migration comments for the pattern).
+
+**Not verified**: a real phone camera or real GPS location (this environment has neither — camera
+tested via synthetic file injection, location tested via a mocked `navigator.geolocation`), a
+live `ANTHROPIC_API_KEY` call (no key configured here, only the heuristic fallback path was
+exercised), and the actual Beer Buddy app's UI firsthand (verified via its App Store/Play Store
+listings and product description instead, per the earlier research step).
 
 ## Project layout
 
@@ -196,25 +251,25 @@ eatrate/
     auth.py                password hashing, sessions
     photos.py               base64 photo decode + save to DATA_DIR/uploads/
     osm.py                    OpenStreetMap/Overpass fetch + grid-cell caching
-    admin.py                   admin secret + manual-review-limit constant
-    notify.py                    report email notification (simulated or SMTP)
-    giftcards.py                   gift card issuance (simulated, swap in real provider here)
-    app.py                          HTTP router + all API handlers
+    ai_insights.py              business dashboard insights (heuristic or Claude API)
+    admin.py                      admin secret, manual-review-limit, redemption-enabled flag
+    notify.py                        report email notification (simulated or SMTP)
+    giftcards.py                        gift card issuance (simulated, swap in real provider here)
+    app.py                                 HTTP router + all API handlers
   static/
-    index.html              friends feed (home screen) + camera CTA
-    map.html                 live map of nearby restaurants (Leaflet + OSM)
-    claim.html                 self-service business claim form
-    business.html                claimed-restaurant dashboard
+    index.html              friends feed (home screen) + camera CTA + "restaurants near you"
+    claim.html                self-service business claim form (soft-launch partners only)
+    business.html                claimed-restaurant dashboard (trial badge, AI insights, chart)
     capture.html              photo-first post creation flow
     friends.html                add/remove friends
     login.html / signup.html
     restaurant.html              restaurant detail, photo grid of posts
-    rewards.html                  pending/redeemed rewards, redeem flow
+    rewards.html                  reward progress (redemption currently disabled)
     profile.html                    your post grid, stats, logout
-    admin.html                       pilot fraud-review panel (not in nav)
-    vendor/leaflet/                    vendored Leaflet.js — no CDN dependency
+    admin.html                       pilot ops panel (redemption review, reports, soft-launch
+                                      partner picker) — not linked from the app's nav
     css/app.css
-    js/api.js                        fetch wrapper + shared post/tabbar rendering
+    js/api.js                        fetch wrapper + shared post/tabbar/nearby-card rendering
 
 (eatrate.db and the uploads/ folder are created at runtime under DATA_DIR — the
 project root locally, a mounted volume in production — and are gitignored.)
@@ -229,10 +284,10 @@ project root locally, a mounted volume in production — and are gitignored.)
 | POST   | `/api/logout`                     | ✓    | |
 | GET    | `/api/me`                         | ✓    | |
 | GET    | `/api/restaurants`                | –    | list with avg rating + post count |
-| GET    | `/api/restaurants/:id`            | ✓    | detail + all posts (photo grid) + claim status |
-| GET    | `/api/map/restaurants`            | ✓    | `?min_lat&min_lng&max_lat&max_lng` — live OSM-backed viewport search |
-| POST   | `/api/restaurants/:id/claim`      | ✓    | `{business_name, contact_email}` — self-service, first claim wins (409 if already claimed) |
-| GET    | `/api/business/dashboard`         | ✓    | stats + weekly trend + photos for every restaurant you've claimed |
+| GET    | `/api/restaurants/:id`            | ✓    | detail + all posts (photo grid) + claim/soft-launch-partner status |
+| GET    | `/api/restaurants/nearby`         | ✓    | `?lat&lng` — real restaurants within 5 miles, randomized order, live OSM-backed |
+| POST   | `/api/restaurants/:id/claim`      | ✓    | `{business_name, contact_email}` — 403 unless the restaurant is a soft-launch partner, 409 if already claimed |
+| GET    | `/api/business/dashboard`         | ✓    | stats + weekly trend + AI insights + trial status + photos for every restaurant you've claimed |
 | POST   | `/api/posts`                      | ✓    | `{photo: data-url, restaurant_name, rating: 0-10, caption?}` — restaurant is found-or-created by name; `429` if rate-limited |
 | POST   | `/api/posts/:id/cheer`            | ✓    | toggles a cheer; 403 if you're not the author or their friend |
 | POST   | `/api/posts/:id/report`           | ✓    | `{reason?}` — flags a post, notifies the operator |
@@ -240,9 +295,11 @@ project root locally, a mounted volume in production — and are gitignored.)
 | GET    | `/api/friends`                    | ✓    | |
 | POST   | `/api/friends`                    | ✓    | `{email}` — adds bidirectionally |
 | DELETE | `/api/friends/:id`                | ✓    | removes both directions |
-| GET    | `/api/rewards`                    | ✓    | mine, includes `review_status`: `pending` / `under_review` / `redeemed` / `rejected` |
-| POST   | `/api/rewards/:id/redeem`         | ✓    | `{restaurant_id}` — returns `{under_review: true}` instead of a gift card for the first 30 platform-wide |
+| GET    | `/api/rewards`                    | ✓    | mine, plus `redemption_enabled` — see "Gift card redemption" above |
+| POST   | `/api/rewards/:id/redeem`         | ✓    | `403` unless `REDEMPTION_ENABLED=true`; otherwise `{restaurant_id}` → gift card, or `{under_review: true}` for the first 30 platform-wide |
 | GET    | `/api/profile`                    | ✓    | my posts + rewards + friend count + progress to next reward |
+| GET    | `/api/admin/restaurants/search`   | admin secret | `?q=` — search restaurants to designate as soft-launch partners |
+| POST   | `/api/admin/restaurants/:id/soft-launch-partner` | admin secret | `{enabled}` — only partners can be claimed |
 | GET    | `/api/admin/redemptions`          | admin secret | pending manual-review redemptions + how many of the 30 slots are used |
 | POST   | `/api/admin/redemptions/:id/approve` | admin secret | issues the gift card, marks `redeemed` |
 | POST   | `/api/admin/redemptions/:id/reject`  | admin secret | marks `rejected`, no card issued |

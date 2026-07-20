@@ -22,6 +22,13 @@
           <div style="color:var(--muted); font-size:13px;">Snap a photo to share it with your friends</div>
         </div>
       </a>
+
+      <div class="nearby-section-head">
+        <h2>Restaurants near you</h2>
+        <span class="sub">Tap to see reviews</span>
+      </div>
+      <div id="nearby-content" class="loading">Finding restaurants near you…</div>
+
       <div id="ftc-banner-slot"></div>
       <div id="feed" class="loading">Loading feed…</div>
     </main>
@@ -29,6 +36,49 @@
   </div>
   <script src="/js/api.js"></script>
   <script>
+    function renderLocatePrompt() {
+      const nearbyContent = document.getElementById("nearby-content");
+      nearbyContent.className = "card nearby-locate-card";
+      nearbyContent.innerHTML = `
+        <div style="font-size:13px; color:var(--muted);">Enable location to see restaurants near you.</div>
+        <button class="primary" id="enable-location-btn">Enable location</button>
+      `;
+      document.getElementById("enable-location-btn").addEventListener("click", loadNearby);
+    }
+
+    function loadNearby() {
+      const nearbyContent = document.getElementById("nearby-content");
+      nearbyContent.className = "loading";
+      nearbyContent.textContent = "Finding restaurants near you…";
+
+      if (!navigator.geolocation) {
+        renderLocatePrompt();
+        return;
+      }
+
+      navigator.geolocation.getCurrentPosition(
+        async (pos) => {
+          try {
+            const { restaurants } = await api.get(
+              `/api/restaurants/nearby?lat=${pos.coords.latitude}&lng=${pos.coords.longitude}`
+            );
+            if (restaurants.length === 0) {
+              nearbyContent.className = "empty-state";
+              nearbyContent.textContent = "No restaurants found nearby yet.";
+              return;
+            }
+            nearbyContent.className = "nearby-scroll";
+            nearbyContent.innerHTML = restaurants.map(renderNearbyCard).join("");
+          } catch (err) {
+            nearbyContent.className = "empty-state";
+            nearbyContent.textContent = "Couldn't load nearby restaurants.";
+          }
+        },
+        () => renderLocatePrompt(),
+        { timeout: 8000 }
+      );
+    }
+
     (async () => {
       const user = await requireAuth();
       if (!user) return;
@@ -37,6 +87,7 @@
       document.getElementById("ftc-banner-slot").innerHTML = ftcBanner();
       wireCheerButtons(document.getElementById("main"));
       initReportModal(document.getElementById("main"));
+      loadNearby();
 
       try {
         const { posts } = await api.get("/api/feed");

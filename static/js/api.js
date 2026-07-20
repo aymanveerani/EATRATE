@@ -63,7 +63,6 @@ async function requireAuth() {
 function renderTabbar(active) {
   const left = [
     { href: "/index.html", icon: "🍽️", label: "Feed" },
-    { href: "/map.html", icon: "🗺️", label: "Map" },
     { href: "/friends.html", icon: "🧑‍🤝‍🧑", label: "Friends" },
   ];
   const right = [
@@ -111,6 +110,58 @@ function renderPostCard(post) {
         </div>
       </div>
     </div>`;
+}
+
+const CUISINE_ICONS = {
+  italian: "🍝",
+  pizza: "🍕",
+  japanese: "🍣",
+  sushi: "🍣",
+  mexican: "🌮",
+  indian: "🍛",
+  chinese: "🥡",
+  thai: "🍜",
+  american: "🍔",
+  burger: "🍔",
+  french: "🥐",
+  coffee_shop: "☕",
+  coffee: "☕",
+  cafe: "☕",
+  bakery: "🥐",
+  seafood: "🦞",
+  steak_house: "🥩",
+  korean: "🍱",
+  mediterranean: "🥙",
+  vegan: "🥗",
+  vegetarian: "🥗",
+  breakfast: "🥞",
+  bar: "🍸",
+  vietnamese: "🍜",
+  greek: "🥙",
+  spanish: "🥘",
+  argentinian: "🥩",
+};
+
+function cuisineIcon(cuisine) {
+  if (!cuisine) return "🍽️";
+  const key = cuisine.toLowerCase().split(/[;,\s]+/)[0];
+  return CUISINE_ICONS[key] || "🍽️";
+}
+
+function renderNearbyCard(r) {
+  const ratingHtml =
+    r.post_count > 0
+      ? `<div class="nearby-rating">${r.avg_rating}<span>/10</span></div>`
+      : `<div class="nearby-rating empty">New</div>`;
+  return `
+    <a href="/restaurant.html?id=${r.id}" class="nearby-card">
+      <div class="nearby-hero">${cuisineIcon(r.cuisine)}</div>
+      <div class="nearby-body">
+        <div class="nearby-name">${escapeHtml(r.name)}</div>
+        <div class="nearby-meta">${escapeHtml(r.cuisine || "Restaurant")}</div>
+        ${ratingHtml}
+      </div>
+    </a>`;
 }
 
 function wireCheerButtons(container) {

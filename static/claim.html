@@ -10,7 +10,7 @@
   <div class="app">
     <header class="topbar">
       <div class="brand">
-        <a href="/map.html" style="text-decoration:none; color:var(--ink); font-size:20px;">←</a>
+        <a href="/index.html" style="text-decoration:none; color:var(--ink); font-size:20px;">←</a>
       </div>
       <h1 style="font-size:18px;">Claim your business</h1>
     </header>
@@ -42,7 +42,6 @@
   <script>
     const params = new URLSearchParams(window.location.search);
     const restaurantId = params.get("restaurant_id");
-    const prefillName = params.get("name");
 
     const form = document.getElementById("claim-form");
     const errorBox = document.getElementById("error");
@@ -78,21 +77,22 @@
         return;
       }
 
-      if (prefillName) {
-        document.getElementById("restaurant-name").textContent = prefillName;
-      } else {
-        try {
-          const { restaurant } = await api.get(`/api/restaurants/${restaurantId}`);
-          document.getElementById("restaurant-name").textContent = restaurant.name;
-          if (restaurant.claimed) {
-            errorBox.textContent = "This restaurant has already been claimed.";
-            errorBox.style.display = "block";
-            form.style.display = "none";
-          }
-        } catch (e) {
-          document.getElementById("restaurant-name").textContent = "Restaurant not found.";
+      try {
+        const { restaurant } = await api.get(`/api/restaurants/${restaurantId}`);
+        document.getElementById("restaurant-name").textContent = restaurant.name;
+        if (restaurant.claimed) {
+          errorBox.textContent = "This restaurant has already been claimed.";
+          errorBox.style.display = "block";
+          form.style.display = "none";
+        } else if (!restaurant.soft_launch_partner) {
+          errorBox.textContent =
+            "This restaurant isn't part of our soft launch yet — check back soon!";
+          errorBox.style.display = "block";
           form.style.display = "none";
         }
+      } catch (e) {
+        document.getElementById("restaurant-name").textContent = "Restaurant not found.";
+        form.style.display = "none";
       }
     })();
   </script>
