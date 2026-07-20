@@ -1,0 +1,6 @@
+eatrate.db
+uploads/
+static/uploads/
+__pycache__/
+*.pyc
+.DS_Store

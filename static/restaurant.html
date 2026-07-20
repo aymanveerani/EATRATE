@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Restaurant — EatRate</title>
+  <link rel="stylesheet" href="/css/app.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <a href="/index.html" style="text-decoration:none; color:var(--ink); font-size:20px;">←</a>
+      </div>
+      <h1 id="restaurant-name" style="font-size:18px;">Loading…</h1>
+    </header>
+    <main id="main">
+      <div id="content" class="loading">Loading…</div>
+    </main>
+    <div id="tabbar-slot"></div>
+  </div>
+  <script src="/js/api.js"></script>
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const restaurantId = params.get("id");
+
+    async function loadRestaurant() {
+      const { restaurant } = await api.get(`/api/restaurants/${restaurantId}`);
+      document.getElementById("restaurant-name").textContent = restaurant.name;
+
+      const postsHtml = restaurant.posts.length
+        ? restaurant.posts.map(renderPostCard).join("")
+        : `<div class="empty-state">No one's shared this place yet.</div>`;
+
+      document.getElementById("content").innerHTML = `
+        <div class="card">
+          <div class="meta" style="color:var(--muted); margin-bottom:4px;">${escapeHtml(restaurant.cuisine || "Restaurant")}${restaurant.address ? " · " + escapeHtml(restaurant.address) : ""}</div>
+          <div style="display:flex; align-items:baseline; gap:8px;">
+            <span style="font-size:32px; font-weight:800;">${restaurant.posts.length ? restaurant.avg_rating : "—"}</span>
+            <span style="color:var(--muted);">/ 10 · ${restaurant.posts.length} post${restaurant.posts.length === 1 ? "" : "s"}</span>
+          </div>
+        </div>
+
+        <a href="/capture.html?restaurant=${encodeURIComponent(restaurant.name)}" class="card primary" style="display:block; text-align:center; text-decoration:none; background:var(--accent); color:white; font-weight:700;">
+          📸 Share your visit
+        </a>
+
+        ${postsHtml}
+      `;
+
+      wireCheerButtons(document.getElementById("content"));
+    }
+
+    (async () => {
+      const user = await requireAuth();
+      if (!user) return;
+      document.getElementById("tabbar-slot").innerHTML = renderTabbar("");
+      if (!restaurantId) {
+        document.getElementById("content").textContent = "No restaurant specified.";
+        return;
+      }
+      try {
+        await loadRestaurant();
+      } catch (e) {
+        document.getElementById("content").textContent = "Failed to load restaurant.";
+      }
+    })();
+  </script>
+</body>
+</html>

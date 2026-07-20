@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Profile — EatRate</title>
+  <link rel="stylesheet" href="/css/app.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand"><div class="mark">🍴</div><h1>Profile</h1></div>
+      <button class="secondary" id="logout-btn" style="padding:8px 12px; font-size:13px;">Log out</button>
+    </header>
+    <main>
+      <div id="content" class="loading">Loading…</div>
+    </main>
+    <div id="tabbar-slot"></div>
+  </div>
+  <script src="/js/api.js"></script>
+  <script>
+    document.getElementById("logout-btn").addEventListener("click", async () => {
+      await api.post("/api/logout");
+      window.location.href = "/login.html";
+    });
+
+    (async () => {
+      const user = await requireAuth();
+      if (!user) return;
+      document.getElementById("tabbar-slot").innerHTML = renderTabbar("Profile");
+
+      try {
+        const profile = await api.get("/api/profile");
+        const redeemedCount = profile.rewards.filter((r) => r.status === "redeemed").length;
+        const pendingCount = profile.rewards.filter((r) => r.status === "pending").length;
+
+        const gridHtml = profile.posts.length
+          ? `<div class="photo-grid">${profile.posts
+              .map((p) => `<a href="/restaurant.html?id=${p.restaurant_id}"><img src="${p.photo_url}" loading="lazy" /></a>`)
+              .join("")}</div>`
+          : `<div class="empty-state">No posts yet. Tap the camera button to share your first bite.</div>`;
+
+        document.getElementById("content").innerHTML = `
+          <div class="card">
+            <div style="font-weight:800; font-size:18px;">${escapeHtml(user.name)}</div>
+            <div style="color:var(--muted); font-size:14px;">${escapeHtml(user.email)}</div>
+            <div style="display:flex; gap:16px; margin-top:12px;">
+              <div><div style="font-weight:800; font-size:20px;">${profile.posts.length}</div><div style="color:var(--muted); font-size:12px;">Posts</div></div>
+              <div><div style="font-weight:800; font-size:20px;">${profile.friend_count}</div><div style="color:var(--muted); font-size:12px;">Friends</div></div>
+              <div><div style="font-weight:800; font-size:20px;">${redeemedCount}</div><div style="color:var(--muted); font-size:12px;">Redeemed</div></div>
+              <div><div style="font-weight:800; font-size:20px;">${pendingCount}</div><div style="color:var(--muted); font-size:12px;">Pending</div></div>
+            </div>
+          </div>
+          <div class="card">
+            <h3 style="margin-top:0;">Your posts</h3>
+            ${gridHtml}
+          </div>
+        `;
+      } catch (e) {
+        document.getElementById("content").textContent = "Failed to load profile.";
+      }
+    })();
+  </script>
+</body>
+</html>

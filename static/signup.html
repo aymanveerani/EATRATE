@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Sign up — EatRate</title>
+  <link rel="stylesheet" href="/css/app.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="mark">🍴</div>
+        <div class="wordmark"><h1>EatRate</h1><span class="tagline">Share every bite</span></div>
+      </div>
+    </header>
+    <main>
+      <div class="card">
+        <h2 style="margin-top:0;">Create your account</h2>
+        <p style="color:var(--muted); font-size:14px; margin-top:-8px;">Snap what you're eating and share it with friends. Every 5 posts earns a $10 gift card.</p>
+        <div id="error" style="display:none;" class="error-msg"></div>
+        <form id="signup-form">
+          <div>
+            <label for="name">Name</label>
+            <input type="text" id="name" required autocomplete="name" />
+          </div>
+          <div>
+            <label for="email">Email</label>
+            <input type="email" id="email" required autocomplete="email" />
+          </div>
+          <div>
+            <label for="password">Password</label>
+            <input type="password" id="password" required minlength="6" autocomplete="new-password" />
+          </div>
+          <button type="submit" class="primary" id="submit-btn">Create account</button>
+        </form>
+        <div class="link-row">Already have an account? <a href="/login.html">Log in</a></div>
+      </div>
+    </main>
+  </div>
+  <script src="/js/api.js"></script>
+  <script>
+    (async () => {
+      try {
+        await api.get("/api/me");
+        window.location.href = "/index.html";
+      } catch (e) {}
+    })();
+
+    const form = document.getElementById("signup-form");
+    const errorBox = document.getElementById("error");
+    const submitBtn = document.getElementById("submit-btn");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      errorBox.style.display = "none";
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Creating…";
+      try {
+        await api.post("/api/signup", {
+          name: document.getElementById("name").value,
+          email: document.getElementById("email").value,
+          password: document.getElementById("password").value,
+        });
+        window.location.href = "/index.html";
+      } catch (err) {
+        errorBox.textContent = err.message;
+        errorBox.style.display = "block";
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Create account";
+      }
+    });
+  </script>
+</body>
+</html>

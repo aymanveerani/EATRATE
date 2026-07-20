@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Log in — EatRate</title>
+  <link rel="stylesheet" href="/css/app.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="mark">🍴</div>
+        <div class="wordmark"><h1>EatRate</h1><span class="tagline">Share every bite</span></div>
+      </div>
+    </header>
+    <main>
+      <div class="card">
+        <h2 style="margin-top:0;">Welcome back</h2>
+        <div id="error" style="display:none;" class="error-msg"></div>
+        <form id="login-form">
+          <div>
+            <label for="email">Email</label>
+            <input type="email" id="email" required autocomplete="email" />
+          </div>
+          <div>
+            <label for="password">Password</label>
+            <input type="password" id="password" required autocomplete="current-password" />
+          </div>
+          <button type="submit" class="primary" id="submit-btn">Log in</button>
+        </form>
+        <div class="link-row">New here? <a href="/signup.html">Create an account</a></div>
+      </div>
+    </main>
+  </div>
+  <script src="/js/api.js"></script>
+  <script>
+    (async () => {
+      try {
+        await api.get("/api/me");
+        window.location.href = "/index.html";
+      } catch (e) {}
+    })();
+
+    const form = document.getElementById("login-form");
+    const errorBox = document.getElementById("error");
+    const submitBtn = document.getElementById("submit-btn");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      errorBox.style.display = "none";
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Logging in…";
+      try {
+        await api.post("/api/login", {
+          email: document.getElementById("email").value,
+          password: document.getElementById("password").value,
+        });
+        window.location.href = "/index.html";
+      } catch (err) {
+        errorBox.textContent = err.message;
+        errorBox.style.display = "block";
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Log in";
+      }
+    });
+  </script>
+</body>
+</html>

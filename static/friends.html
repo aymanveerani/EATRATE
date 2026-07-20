@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Friends — EatRate</title>
+  <link rel="stylesheet" href="/css/app.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand"><div class="mark">🍴</div><h1>Friends</h1></div>
+    </header>
+    <main>
+      <div class="card">
+        <h3 style="margin-top:0;">Add a friend</h3>
+        <p style="color:var(--muted); font-size:13px; margin-top:-8px;">Only friends can see what you share.</p>
+        <div id="error" style="display:none;" class="error-msg"></div>
+        <div id="success" style="display:none;" class="success-msg"></div>
+        <form id="add-form" style="flex-direction:row; gap:8px;">
+          <input type="email" id="friend-email" placeholder="friend@example.com" required style="flex:1;" />
+          <button type="submit" class="primary" id="add-btn" style="width:auto; padding:12px 18px;">Add</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top:0;">Your friends</h3>
+        <div id="friend-list" class="loading">Loading…</div>
+      </div>
+    </main>
+    <div id="tabbar-slot"></div>
+  </div>
+  <script src="/js/api.js"></script>
+  <script>
+    async function loadFriends() {
+      const { friends } = await api.get("/api/friends");
+      const list = document.getElementById("friend-list");
+      if (friends.length === 0) {
+        list.className = "empty-state";
+        list.textContent = "No friends added yet.";
+        return;
+      }
+      list.className = "";
+      list.innerHTML = friends
+        .map(
+          (f) => `
+          <div class="friend-row">
+            <div class="friend-info">
+              <div class="friend-avatar">${escapeHtml(f.name.charAt(0).toUpperCase())}</div>
+              <div>
+                <div class="friend-name">${escapeHtml(f.name)}</div>
+                <div class="friend-meta">${f.post_count} post${f.post_count === 1 ? "" : "s"}</div>
+              </div>
+            </div>
+            <button class="secondary" style="padding:6px 12px; font-size:12px;" data-remove-id="${f.id}">Remove</button>
+          </div>
+        `
+        )
+        .join("");
+    }
+
+    document.getElementById("friend-list").addEventListener("click", async (e) => {
+      const btn = e.target.closest("[data-remove-id]");
+      if (!btn) return;
+      btn.disabled = true;
+      try {
+        await api.del(`/api/friends/${btn.dataset.removeId}`);
+        await loadFriends();
+      } catch (err) {
+        btn.disabled = false;
+      }
+    });
+
+    const form = document.getElementById("add-form");
+    const errorBox = document.getElementById("error");
+    const successBox = document.getElementById("success");
+    const addBtn = document.getElementById("add-btn");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      errorBox.style.display = "none";
+      successBox.style.display = "none";
+      addBtn.disabled = true;
+      try {
+        const result = await api.post("/api/friends", {
+          email: document.getElementById("friend-email").value,
+        });
+        successBox.textContent = `Added ${result.friend.name} as a friend!`;
+        successBox.style.display = "block";
+        document.getElementById("friend-email").value = "";
+        await loadFriends();
+      } catch (err) {
+        errorBox.textContent = err.message;
+        errorBox.style.display = "block";
+      } finally {
+        addBtn.disabled = false;
+      }
+    });
+
+    (async () => {
+      const user = await requireAuth();
+      if (!user) return;
+      document.getElementById("tabbar-slot").innerHTML = renderTabbar("Friends");
+      try {
+        await loadFriends();
+      } catch (e) {
+        document.getElementById("friend-list").textContent = "Failed to load friends.";
+      }
+    })();
+  </script>
+</body>
+</html>

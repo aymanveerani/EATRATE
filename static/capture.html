@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Share a bite — EatRate</title>
+  <link rel="stylesheet" href="/css/app.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <a href="/index.html" id="back-link" style="text-decoration:none; color:var(--ink); font-size:20px;">←</a>
+      </div>
+      <h1 style="font-size:18px;">Share a bite</h1>
+    </header>
+    <main>
+      <input type="file" id="photo-input" accept="image/*" capture="environment" style="display:none;" />
+
+      <div id="prompt-state" class="capture-prompt">
+        <div class="capture-circle" id="camera-trigger">📸</div>
+        <h2>What are you eating?</h2>
+        <p class="capture-sub">Snap a photo to share it with your friends.</p>
+      </div>
+
+      <div id="form-state" style="display:none;">
+        <div class="card" style="padding:0; overflow:hidden;">
+          <img id="photo-preview" style="width:100%; display:block; max-height:340px; object-fit:cover;" />
+        </div>
+        <div style="text-align:center; margin: 6px 0 12px;">
+          <a href="#" id="retake-link" style="color:var(--muted); font-size:13px; text-decoration:underline;">Retake photo</a>
+        </div>
+
+        <div class="card">
+          <div id="error" style="display:none;" class="error-msg"></div>
+          <form id="post-form">
+            <div>
+              <label for="restaurant">Where are you eating?</label>
+              <input type="text" id="restaurant" list="restaurant-options" placeholder="e.g. Joe's Pizza" required autocomplete="off" />
+              <datalist id="restaurant-options"></datalist>
+            </div>
+            <div class="star-rating">
+              <input type="range" id="rating" min="0" max="10" step="1" value="8" />
+              <span class="value" id="rating-value">8</span>
+            </div>
+            <textarea id="caption" placeholder="Say something about it (optional)"></textarea>
+            <button type="submit" class="primary" id="submit-btn">Share with friends</button>
+          </form>
+        </div>
+      </div>
+
+      <div id="success-state" style="display:none;">
+        <div class="card" style="text-align:center; padding:32px 20px;">
+          <div style="font-size:48px;">✅</div>
+          <h2 style="margin:8px 0 4px;">Shared with your friends!</h2>
+          <p style="color:var(--muted); font-size:14px;" id="success-sub"></p>
+          <div id="reward-banner" style="display:none;" class="card reward-card" style="margin-top:16px;">
+            <div class="amount">🎉 $10 gift card earned!</div>
+            <div style="font-size:13px; color:var(--muted); margin-top:4px;">Redeem it anytime from Rewards.</div>
+          </div>
+          <button class="primary" id="done-btn" style="margin-top:16px;">Back to feed</button>
+        </div>
+      </div>
+    </main>
+    <div id="tabbar-slot"></div>
+  </div>
+  <script src="/js/api.js"></script>
+  <script>
+    let photoDataUrl = null;
+
+    const promptState = document.getElementById("prompt-state");
+    const formState = document.getElementById("form-state");
+    const successState = document.getElementById("success-state");
+    const photoInput = document.getElementById("photo-input");
+    const photoPreview = document.getElementById("photo-preview");
+
+    function showState(state) {
+      promptState.style.display = state === "prompt" ? "" : "none";
+      formState.style.display = state === "form" ? "" : "none";
+      successState.style.display = state === "success" ? "" : "none";
+      document.getElementById("back-link").style.display = state === "success" ? "none" : "";
+    }
+
+    document.getElementById("camera-trigger").addEventListener("click", () => photoInput.click());
+
+    photoInput.addEventListener("change", () => {
+      const file = photoInput.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        photoDataUrl = reader.result;
+        photoPreview.src = photoDataUrl;
+        showState("form");
+      };
+      reader.readAsDataURL(file);
+    });
+
+    document.getElementById("retake-link").addEventListener("click", (e) => {
+      e.preventDefault();
+      photoDataUrl = null;
+      photoInput.value = "";
+      showState("prompt");
+    });
+
+    const ratingInput = document.getElementById("rating");
+    const ratingValue = document.getElementById("rating-value");
+    ratingInput.addEventListener("input", () => (ratingValue.textContent = ratingInput.value));
+
+    const form = document.getElementById("post-form");
+    const errorBox = document.getElementById("error");
+    const submitBtn = document.getElementById("submit-btn");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      errorBox.style.display = "none";
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Sharing…";
+      try {
+        const result = await api.post("/api/posts", {
+          photo: photoDataUrl,
+          restaurant_name: document.getElementById("restaurant").value,
+          rating: parseInt(ratingInput.value, 10),
+          caption: document.getElementById("caption").value,
+        });
+        document.getElementById("success-sub").textContent = `Post #${result.post_count}`;
+        if (result.reward_earned) {
+          document.getElementById("reward-banner").style.display = "block";
+        }
+        showState("success");
+      } catch (err) {
+        errorBox.textContent = err.message;
+        errorBox.style.display = "block";
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Share with friends";
+      }
+    });
+
+    document.getElementById("done-btn").addEventListener("click", () => {
+      window.location.href = "/index.html";
+    });
+
+    (async () => {
+      const user = await requireAuth();
+      if (!user) return;
+      document.getElementById("tabbar-slot").innerHTML = renderTabbar("");
+
+      const prefill = new URLSearchParams(window.location.search).get("restaurant");
+      if (prefill) document.getElementById("restaurant").value = prefill;
+
+      try {
+        const { restaurants } = await api.get("/api/restaurants");
+        document.getElementById("restaurant-options").innerHTML = restaurants
+          .map((r) => `<option value="${escapeHtml(r.name)}"></option>`)
+          .join("");
+      } catch (e) {}
+    })();
+  </script>
+</body>
+</html>

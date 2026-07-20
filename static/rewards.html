@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Rewards — EatRate</title>
+  <link rel="stylesheet" href="/css/app.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand"><div class="mark">🍴</div><h1>Rewards</h1></div>
+    </header>
+    <main>
+      <div id="list" class="loading">Loading rewards…</div>
+    </main>
+    <div id="tabbar-slot"></div>
+  </div>
+
+  <div id="modal-backdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:30;"></div>
+  <div id="redeem-modal" style="display:none; position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100%; max-width:430px; background:var(--card); border:1px solid var(--border); border-bottom:none; border-radius:18px 18px 0 0; padding:20px; z-index:31;">
+    <h3 style="margin-top:0;">Choose a restaurant</h3>
+    <p style="color:var(--muted); font-size:14px; margin-top:-8px;">Your $10 gift card will be issued for this restaurant.</p>
+    <div id="modal-error" style="display:none;" class="error-msg"></div>
+    <select id="restaurant-select"></select>
+    <div style="display:flex; gap:8px; margin-top:12px;">
+      <button class="secondary" id="cancel-redeem" style="flex:1;">Cancel</button>
+      <button class="primary" id="confirm-redeem" style="flex:1;">Redeem</button>
+    </div>
+  </div>
+
+  <script src="/js/api.js"></script>
+  <script>
+    let activeRewardId = null;
+    let restaurantsCache = [];
+
+    function closeModal() {
+      document.getElementById("modal-backdrop").style.display = "none";
+      document.getElementById("redeem-modal").style.display = "none";
+      activeRewardId = null;
+    }
+
+    async function openModal(rewardId) {
+      activeRewardId = rewardId;
+      document.getElementById("modal-error").style.display = "none";
+      if (restaurantsCache.length === 0) {
+        const { restaurants } = await api.get("/api/restaurants");
+        restaurantsCache = restaurants;
+      }
+      const select = document.getElementById("restaurant-select");
+      select.innerHTML = restaurantsCache
+        .map((r) => `<option value="${r.id}">${escapeHtml(r.name)}</option>`)
+        .join("");
+      document.getElementById("modal-backdrop").style.display = "block";
+      document.getElementById("redeem-modal").style.display = "block";
+    }
+
+    async function loadRewards() {
+      const { rewards } = await api.get("/api/rewards");
+      const list = document.getElementById("list");
+      if (rewards.length === 0) {
+        list.className = "empty-state";
+        list.innerHTML = "No rewards yet.<br/>Share 5 posts to earn your first $10 gift card.";
+        return;
+      }
+      list.className = "";
+      list.innerHTML = rewards
+        .map((r) => {
+          if (r.status === "pending") {
+            return `
+              <div class="card reward-card">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <div>
+                    <div class="amount">${centsToDollars(r.amount_cents)}</div>
+                    <span class="badge pending">Ready to redeem</span>
+                  </div>
+                  <button class="primary" onclick="openModal(${r.id})">Redeem</button>
+                </div>
+              </div>
+            `;
+          }
+          return `
+            <div class="card">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <div>
+                  <div style="font-weight:700;">${centsToDollars(r.amount_cents)} · ${escapeHtml(r.restaurant_name || "")}</div>
+                  <span class="badge redeemed">Redeemed</span>
+                </div>
+              </div>
+              <div class="gift-code">${escapeHtml(r.gift_code)}</div>
+            </div>
+          `;
+        })
+        .join("");
+    }
+
+    document.getElementById("cancel-redeem").addEventListener("click", closeModal);
+    document.getElementById("modal-backdrop").addEventListener("click", closeModal);
+
+    document.getElementById("confirm-redeem").addEventListener("click", async () => {
+      const btn = document.getElementById("confirm-redeem");
+      const errorBox = document.getElementById("modal-error");
+      errorBox.style.display = "none";
+      btn.disabled = true;
+      btn.textContent = "Redeeming…";
+      try {
+        const restaurantId = document.getElementById("restaurant-select").value;
+        await api.post(`/api/rewards/${activeRewardId}/redeem`, { restaurant_id: parseInt(restaurantId, 10) });
+        closeModal();
+        await loadRewards();
+      } catch (err) {
+        errorBox.textContent = err.message;
+        errorBox.style.display = "block";
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Redeem";
+      }
+    });
+
+    (async () => {
+      const user = await requireAuth();
+      if (!user) return;
+      document.getElementById("tabbar-slot").innerHTML = renderTabbar("Rewards");
+      try {
+        await loadRewards();
+      } catch (e) {
+        document.getElementById("list").textContent = "Failed to load rewards.";
+      }
+    })();
+  </script>
+</body>
+</html>
