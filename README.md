@@ -13,8 +13,8 @@ of a framework, this is a dependency-free app:
 
 - **Backend**: Python 3 standard library only — `http.server` for the HTTP layer, `sqlite3` for
   storage, `hashlib`/`secrets` for password hashing (PBKDF2) and session tokens. Photos are
-  decoded from base64 and written straight to disk under `static/uploads/`. No pip installs
-  required.
+  decoded from base64 and written straight to disk under a data directory (see "Deploying it"
+  below for why this is decoupled from the app code). No pip installs required.
 - **Frontend**: plain HTML/CSS/JS, mobile-width layout, no build step. Photo capture uses a plain
   `<input type="file" capture="environment">`, read client-side with `FileReader` and posted as a
   base64 data URL — no multipart parsing needed on the server.
@@ -32,6 +32,31 @@ python3 run.py 3000  # starts the server on http://localhost:3000
 ```
 
 Open `http://localhost:3000`, sign up, and the first thing you'll see is the camera prompt.
+
+## Deploying it for real
+
+The app is ready to run on a real host — the only thing that changes between local and
+production is where the database and uploaded photos live:
+
+- `DATA_DIR` env var controls this (`server/db.py`). Locally it defaults to the project folder.
+  In production, set it to a path backed by **persistent storage** (a mounted volume) — without
+  that, every redeploy wipes your users, posts, and photos, since the rest of the container
+  filesystem is thrown away on each deploy.
+- `PORT` env var controls what port the server binds to (`run.py`), which is how Railway (and
+  most hosts) tell your app what port to listen on.
+- `Procfile` (`web: python3 run.py`) tells the host how to start the app.
+- `requirements.txt` is intentionally empty — it exists so Railway's builder recognizes this as a
+  Python project. There really are no third-party dependencies.
+
+**Deployed to Railway:** connect this GitHub repo, add a persistent volume, set `DATA_DIR` to the
+volume's mount path, and Railway generates a public HTTPS URL automatically. See the deployment
+walkthrough for the exact click-by-click steps (account creation and payment are steps only you
+can do, so that part isn't automated here).
+
+**Adding a custom domain later:** once the app is live on Railway's free subdomain, buy a domain
+from any registrar (Namecheap, Cloudflare, Google Domains/Squarespace) and add it in Railway's
+service → Settings → Networking → Custom Domain. Railway gives you a CNAME record to add at your
+registrar; DNS propagation usually takes a few minutes to a few hours.
 
 ## The core loop (mirrors Beer Buddy)
 
@@ -92,12 +117,14 @@ description instead, per the earlier research step).
 
 ```
 eatrate/
-  run.py                 entry point
+  run.py                 entry point (reads PORT env var)
   seed.py                 sample restaurant data
+  Procfile                 tells the host how to start the app
+  requirements.txt          empty on purpose — just marks this as a Python project
   server/
-    db.py                 SQLite schema + connection helper
+    db.py                 SQLite schema + connection helper (reads DATA_DIR env var)
     auth.py                password hashing, sessions
-    photos.py               base64 photo decode + save to static/uploads/
+    photos.py               base64 photo decode + save to DATA_DIR/uploads/
     giftcards.py             gift card issuance (simulated, swap in real provider here)
     app.py                    HTTP router + all API handlers
   static/
@@ -108,9 +135,11 @@ eatrate/
     restaurant.html              restaurant detail, photo grid of posts
     rewards.html                  pending/redeemed rewards, redeem flow
     profile.html                    your post grid, stats, logout
-    uploads/                         uploaded photos (created at runtime)
     css/app.css
     js/api.js                        fetch wrapper + shared post/tabbar rendering
+
+(eatrate.db and the uploads/ folder are created at runtime under DATA_DIR — the
+project root locally, a mounted volume in production — and are gitignored.)
 ```
 
 ## API
