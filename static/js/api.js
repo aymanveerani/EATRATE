@@ -148,6 +148,17 @@ function cuisineIcon(cuisine) {
   return CUISINE_ICONS[key] || "🍽️";
 }
 
+function renderNearbyLogo(r) {
+  const fallback = `<span class="nearby-logo-fallback">${cuisineIcon(r.cuisine)}</span>`;
+  if (!r.website_domain) return fallback;
+  // Google's public favicon service — the closest thing to a real "logo" we
+  // can get without a paid Places/Yelp API. Falls back to the cuisine icon
+  // if the domain has no favicon or the request fails.
+  const faviconUrl = `https://www.google.com/s2/favicons?domain=${encodeURIComponent(r.website_domain)}&sz=64`;
+  return `
+    <img src="${faviconUrl}" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('span'), {className:'nearby-logo-fallback', textContent:'${cuisineIcon(r.cuisine)}'}));" />`;
+}
+
 function renderNearbyCard(r) {
   const ratingHtml =
     r.post_count > 0
@@ -155,12 +166,12 @@ function renderNearbyCard(r) {
       : `<div class="nearby-rating empty">New</div>`;
   return `
     <a href="/restaurant.html?id=${r.id}" class="nearby-card">
-      <div class="nearby-hero">${cuisineIcon(r.cuisine)}</div>
-      <div class="nearby-body">
+      <div class="nearby-logo">${renderNearbyLogo(r)}</div>
+      <div class="nearby-info">
         <div class="nearby-name">${escapeHtml(r.name)}</div>
         <div class="nearby-meta">${escapeHtml(r.cuisine || "Restaurant")}</div>
-        ${ratingHtml}
       </div>
+      ${ratingHtml}
     </a>`;
 }
 

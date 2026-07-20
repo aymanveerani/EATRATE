@@ -66,6 +66,7 @@ def public_restaurant(row):
         "lat": row["lat"] if "lat" in keys else None,
         "lng": row["lng"] if "lng" in keys else None,
         "soft_launch_partner": bool(row["soft_launch_partner"]) if "soft_launch_partner" in keys else False,
+        "website_domain": row["website_domain"] if "website_domain" in keys else "",
     }
 
 
@@ -287,7 +288,9 @@ def get_restaurant(ctx, restaurant_id):
 # ---------------------------------------------------------------------------
 
 NEARBY_RADIUS_KM = 5 * 1.60934  # exactly 5 miles
-NEARBY_RESULT_CAP = 18
+NEARBY_RESULT_CAP = 10  # shown as a vertical list now, not a horizontal
+# scroll — 18 made sense off-screen, 10 keeps the feed from being pushed
+# too far down before you reach friends' posts
 
 
 @route("GET", r"/api/restaurants/nearby")

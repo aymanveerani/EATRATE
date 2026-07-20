@@ -19,6 +19,7 @@ import json
 import math
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
@@ -35,9 +36,10 @@ MAX_RESULTS_PER_CELL = 200
 CACHE_TTL_DAYS = 7
 REQUEST_TIMEOUT = 8  # Overpass is a shared free public instance; fail fast
 # and let the next request retry rather than let one dense cell hang the page
-MAX_NEW_FETCHES_PER_REQUEST = 3  # bounds one HTTP response to ~24s worst
-# case; any remaining uncached cells in the viewport get picked up by a
-# subsequent request (the frontend polls again shortly after)
+MAX_NEW_FETCHES_PER_REQUEST = 10  # fetched concurrently (see sync_bbox), so
+# this bounds one HTTP response to roughly one Overpass round-trip (~8s
+# worst case) rather than multiplying by the cell count; any remaining
+# uncached cells in the viewport get picked up by a subsequent request
 AMENITIES = ("restaurant", "cafe", "fast_food")
 
 
@@ -80,6 +82,16 @@ def _fetch_cell_from_overpass(min_lat, min_lng, max_lat, max_lng):
         address = " ".join(b for b in address_bits if b)
         if tags.get("addr:city"):
             address = f"{address}, {tags['addr:city']}" if address else tags["addr:city"]
+
+        website = tags.get("website") or tags.get("contact:website") or ""
+        domain = ""
+        if website:
+            parsed = urllib.parse.urlparse(website if "//" in website else f"//{website}")
+            domain = (parsed.netloc or parsed.path).split("/")[0]
+            if domain.startswith("www."):
+                domain = domain[4:]
+            domain = domain[:200]
+
         places.append(
             {
                 "osm_id": f"node/{el['id']}",
@@ -88,6 +100,7 @@ def _fetch_cell_from_overpass(min_lat, min_lng, max_lat, max_lng):
                 "address": address[:300],
                 "lat": el["lat"],
                 "lng": el["lon"],
+                "website_domain": domain,
             }
         )
     return places
@@ -107,42 +120,66 @@ def sync_bbox(conn, min_lat, min_lng, max_lat, max_lng):
         raise OsmError("This area is too large to search at once.")
 
     cutoff = (datetime.utcnow() - timedelta(days=CACHE_TTL_DAYS)).isoformat()
-    fetches_attempted = 0
 
+    # Collect which cells actually need fetching first, then fetch all of
+    # them concurrently — these are I/O-bound network calls (waiting on
+    # Overpass), so MAX_NEW_FETCHES_PER_REQUEST cells fetched in parallel
+    # cost roughly one Overpass round-trip in wall-clock time instead of
+    # that many times over. All DB writes happen back on this thread after,
+    # since sqlite3 connections aren't safe to share across threads.
+    to_fetch = []
     for cy in range(y0, y1 + 1):
         for cx in range(x0, x1 + 1):
-            if fetches_attempted >= MAX_NEW_FETCHES_PER_REQUEST:
+            if len(to_fetch) >= MAX_NEW_FETCHES_PER_REQUEST:
                 break
-
             key = _cell_key(cy, cx)
             cached = conn.execute(
                 "SELECT fetched_at FROM map_cache WHERE cell_key = ?", (key,)
             ).fetchone()
             if cached and cached["fetched_at"] > cutoff:
                 continue
+            to_fetch.append((cy, cx, key))
+        if len(to_fetch) >= MAX_NEW_FETCHES_PER_REQUEST:
+            break
 
-            fetches_attempted += 1
-            cell_min_lat, cell_max_lat = cy * CELL_SIZE_DEGREES, (cy + 1) * CELL_SIZE_DEGREES
-            cell_min_lng, cell_max_lng = cx * CELL_SIZE_DEGREES, (cx + 1) * CELL_SIZE_DEGREES
-            try:
-                places = _fetch_cell_from_overpass(cell_min_lat, cell_min_lng, cell_max_lat, cell_max_lng)
-            except OsmError:
-                # Leave this cell uncached so a later request retries it;
-                # still serve whatever's already cached from other cells.
-                continue
+    def fetch_one(cell):
+        cy, cx, key = cell
+        cell_min_lat, cell_max_lat = cy * CELL_SIZE_DEGREES, (cy + 1) * CELL_SIZE_DEGREES
+        cell_min_lng, cell_max_lng = cx * CELL_SIZE_DEGREES, (cx + 1) * CELL_SIZE_DEGREES
+        return key, _fetch_cell_from_overpass(cell_min_lat, cell_min_lng, cell_max_lat, cell_max_lng)
 
-            for place in places:
+    if to_fetch:
+        with ThreadPoolExecutor(max_workers=len(to_fetch)) as pool:
+            futures = {pool.submit(fetch_one, cell): cell for cell in to_fetch}
+            for future in as_completed(futures):
+                try:
+                    key, places = future.result()
+                except OsmError:
+                    # Leave this cell uncached so a later request retries
+                    # it; still serve whatever's already cached elsewhere.
+                    continue
+
+                for place in places:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO restaurants "
+                        "(name, cuisine, address, lat, lng, osm_id, source, website_domain) "
+                        "VALUES (?, ?, ?, ?, ?, ?, 'osm', ?)",
+                        (
+                            place["name"],
+                            place["cuisine"],
+                            place["address"],
+                            place["lat"],
+                            place["lng"],
+                            place["osm_id"],
+                            place["website_domain"],
+                        ),
+                    )
                 conn.execute(
-                    "INSERT OR IGNORE INTO restaurants (name, cuisine, address, lat, lng, osm_id, source) "
-                    "VALUES (?, ?, ?, ?, ?, ?, 'osm')",
-                    (place["name"], place["cuisine"], place["address"], place["lat"], place["lng"], place["osm_id"]),
+                    "INSERT INTO map_cache (cell_key, fetched_at) VALUES (?, datetime('now')) "
+                    "ON CONFLICT(cell_key) DO UPDATE SET fetched_at = datetime('now')",
+                    (key,),
                 )
-            conn.execute(
-                "INSERT INTO map_cache (cell_key, fetched_at) VALUES (?, datetime('now')) "
-                "ON CONFLICT(cell_key) DO UPDATE SET fetched_at = datetime('now')",
-                (key,),
-            )
-            conn.commit()
+                conn.commit()
 
     return conn.execute(
         """
