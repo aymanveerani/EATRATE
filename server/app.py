@@ -599,24 +599,53 @@ def report_post(ctx, post_id):
 
 @route("GET", r"/api/feed")
 def feed(ctx):
+    """Shows what people are posting at restaurants near the user — not just
+    friends — so the feed has content from day one instead of depending on
+    a friends list. Falls back to a friends-only feed if location isn't
+    available (permission denied, or no lat/lng passed)."""
     user = ctx.require_user()
+    q = parse_qs(ctx.parsed_url.query)
+    try:
+        lat = float(q["lat"][0])
+        lng = float(q["lng"][0])
+    except (KeyError, ValueError, IndexError):
+        lat = lng = None
+
     conn = get_connection()
-    ids = friend_ids_of(conn, user["id"]) + [user["id"]]
-    placeholders = ",".join("?" * len(ids))
-    rows = conn.execute(
-        f"""
-        SELECT posts.*, users.name AS user_name, restaurants.name AS restaurant_name,
-               (SELECT COUNT(*) FROM cheers WHERE cheers.post_id = posts.id) AS cheers_count,
-               EXISTS(SELECT 1 FROM cheers WHERE cheers.post_id = posts.id AND cheers.user_id = ?) AS cheered_by_me
-        FROM posts
-        JOIN users ON users.id = posts.user_id
-        JOIN restaurants ON restaurants.id = posts.restaurant_id
-        WHERE posts.user_id IN ({placeholders})
-        ORDER BY posts.created_at DESC
-        LIMIT 50
-        """,
-        [user["id"]] + ids,
-    ).fetchall()
+    if lat is not None and lng is not None:
+        lat_delta = NEARBY_RADIUS_KM / 111.0
+        lng_delta = NEARBY_RADIUS_KM / (111.0 * max(math.cos(math.radians(lat)), 0.01))
+        rows = conn.execute(
+            """
+            SELECT posts.*, users.name AS user_name, restaurants.name AS restaurant_name,
+                   (SELECT COUNT(*) FROM cheers WHERE cheers.post_id = posts.id) AS cheers_count,
+                   EXISTS(SELECT 1 FROM cheers WHERE cheers.post_id = posts.id AND cheers.user_id = ?) AS cheered_by_me
+            FROM posts
+            JOIN users ON users.id = posts.user_id
+            JOIN restaurants ON restaurants.id = posts.restaurant_id
+            WHERE restaurants.lat BETWEEN ? AND ? AND restaurants.lng BETWEEN ? AND ?
+            ORDER BY posts.created_at DESC
+            LIMIT 50
+            """,
+            (user["id"], lat - lat_delta, lat + lat_delta, lng - lng_delta, lng + lng_delta),
+        ).fetchall()
+    else:
+        ids = friend_ids_of(conn, user["id"]) + [user["id"]]
+        placeholders = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"""
+            SELECT posts.*, users.name AS user_name, restaurants.name AS restaurant_name,
+                   (SELECT COUNT(*) FROM cheers WHERE cheers.post_id = posts.id) AS cheers_count,
+                   EXISTS(SELECT 1 FROM cheers WHERE cheers.post_id = posts.id AND cheers.user_id = ?) AS cheered_by_me
+            FROM posts
+            JOIN users ON users.id = posts.user_id
+            JOIN restaurants ON restaurants.id = posts.restaurant_id
+            WHERE posts.user_id IN ({placeholders})
+            ORDER BY posts.created_at DESC
+            LIMIT 50
+            """,
+            [user["id"]] + ids,
+        ).fetchall()
     conn.close()
     ctx.send_json(HTTPStatus.OK, {"posts": [public_post(r) for r in rows]})
 
