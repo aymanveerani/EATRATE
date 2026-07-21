@@ -5,6 +5,8 @@ import mimetypes
 import os
 import re
 import socketserver
+import threading
+import time
 from datetime import datetime
 from http import HTTPStatus
 from http.cookies import SimpleCookie
@@ -13,6 +15,7 @@ from urllib.parse import parse_qs, urlparse
 
 from server import admin, ai_insights, auth
 from server.ai_insights import generate_insights
+from server.chain_logos import CHAIN_DOMAINS
 from server.db import get_connection, init_db, UPLOADS_DIR
 from server.giftcards import issue_gift_card
 from server.notify import notify_report
@@ -303,59 +306,91 @@ def restaurant_photo(ctx, restaurant_id):
 LOGO_CACHE_DIR = os.path.join(UPLOADS_DIR, "logos")
 
 
-@route("GET", r"/api/restaurants/(?P<restaurant_id>\d+)/logo")
-def restaurant_logo(ctx, restaurant_id):
-    """Proxies a restaurant's actual logo, scraped from its own website
-    (server/logo_fetch.py) — a real brand mark rather than a favicon-
-    service guess. Cached to disk after the first fetch, including a
-    cached "not found" result (empty type file), so a site with no
-    discoverable icon isn't re-scraped on every page view."""
-    ctx.require_user()
+def _sanitize_domain_for_filename(domain):
+    # Domains only ever contain [a-z0-9.-], already filesystem-safe on
+    # POSIX, but keep this explicit in case a malformed value ever ends up
+    # in the website_domain column.
+    return re.sub(r"[^a-z0-9.-]", "_", domain.lower())[:200]
 
-    data_path = os.path.join(LOGO_CACHE_DIR, f"{restaurant_id}.bin")
-    type_path = os.path.join(LOGO_CACHE_DIR, f"{restaurant_id}.type")
+
+def _effective_logo_domain(name, db_domain):
+    """Prefers a curated, hand-verified chain domain over whatever
+    Google/Yelp put in the DB for this restaurant, if its name matches a
+    known chain — catches location-finder subdomains and missing websites
+    for exactly the restaurants users encounter most. Falls back to the
+    DB's own value otherwise."""
+    normalized = _normalize_name(name)
+    for chain_key, chain_domain in CHAIN_DOMAINS.items():
+        if chain_key in normalized:
+            return chain_domain
+    return db_domain
+
+
+def _get_or_fetch_logo(domain):
+    """Returns (content_type, data) for domain's logo, using a disk cache
+    keyed by domain — not by restaurant id — so every location of a chain
+    shares one cached fetch instead of each re-scraping the same site.
+    A cached negative result is ("", b""). Never raises; a failed fetch is
+    cached as a negative result the same way a found one is cached."""
+    key = _sanitize_domain_for_filename(domain)
+    data_path = os.path.join(LOGO_CACHE_DIR, f"{key}.bin")
+    type_path = os.path.join(LOGO_CACHE_DIR, f"{key}.type")
+
     if os.path.isfile(type_path):
         with open(type_path) as f:
             content_type = f.read().strip()
-        if not content_type:
-            raise ApiError(404, "No logo available for this restaurant.")
         with open(data_path, "rb") as f:
             data = f.read()
-        ctx.send_bytes(HTTPStatus.OK, content_type, data, cache_seconds=604800)
-        return
-
-    conn = get_connection()
-    restaurant = conn.execute(
-        "SELECT website_domain FROM restaurants WHERE id = ?", (restaurant_id,)
-    ).fetchone()
-    conn.close()
-    domain = restaurant["website_domain"] if restaurant else ""
+        return content_type, data
 
     os.makedirs(LOGO_CACHE_DIR, exist_ok=True)
     content_type, data = None, None
-    if domain:
-        # A location-finder subdomain (locations.whataburger.com,
-        # order.chipotle.com) often 404s at its root — the actual brand
-        # assets live on the main domain, so try that too before giving up.
-        labels = domain.split(".")
-        base_domain = ".".join(labels[-2:]) if len(labels) > 2 else None
-        for candidate_domain in [domain] + ([base_domain] if base_domain else []):
-            try:
-                content_type, data = logo_fetch_bytes(candidate_domain)
-                break
-            except LogoFetchError:
-                continue
+    # A location-finder subdomain (locations.whataburger.com,
+    # order.chipotle.com) often 404s at its root — the actual brand
+    # assets live on the main domain, so try that too before giving up.
+    labels = domain.split(".")
+    base_domain = ".".join(labels[-2:]) if len(labels) > 2 else None
+    for candidate_domain in [domain] + ([base_domain] if base_domain and base_domain != domain else []):
+        try:
+            content_type, data = logo_fetch_bytes(candidate_domain)
+            break
+        except LogoFetchError:
+            continue
 
     if content_type is None:
-        open(data_path, "wb").close()
-        with open(type_path, "w") as f:
-            f.write("")
-        raise ApiError(404, "No logo found for this restaurant.")
+        content_type, data = "", b""
 
     with open(data_path, "wb") as f:
         f.write(data)
     with open(type_path, "w") as f:
         f.write(content_type)
+    return content_type, data
+
+
+@route("GET", r"/api/restaurants/(?P<restaurant_id>\d+)/logo")
+def restaurant_logo(ctx, restaurant_id):
+    """Proxies a restaurant's actual logo — from a curated chain domain if
+    its name matches a known chain, otherwise scraped from its own website
+    (server/logo_fetch.py) — a real brand mark rather than a favicon-
+    service guess. Cached to disk per domain (see _get_or_fetch_logo), so
+    a chain with 10 locations in the DB is fetched once, not 10 times."""
+    ctx.require_user()
+
+    conn = get_connection()
+    restaurant = conn.execute(
+        "SELECT name, website_domain FROM restaurants WHERE id = ?", (restaurant_id,)
+    ).fetchone()
+    conn.close()
+    if restaurant is None:
+        raise ApiError(404, "Restaurant not found.")
+
+    domain = _effective_logo_domain(restaurant["name"], restaurant["website_domain"])
+    if not domain:
+        raise ApiError(404, "No website on file for this restaurant.")
+
+    content_type, data = _get_or_fetch_logo(domain)
+    if not content_type:
+        raise ApiError(404, "No logo found for this restaurant.")
     ctx.send_bytes(HTTPStatus.OK, content_type, data, cache_seconds=604800)
 
 
@@ -420,18 +455,40 @@ SOURCE_PRIORITY = {"google": 0, "yelp": 1, "osm": 2, "user": 3}
 
 # Source-level type/category filters (see google_places.py's excludedTypes
 # and yelp.py's EXCLUDED_CATEGORY_ALIASES) keep most of these out of newly-
-# fetched data, but a name-based check here is a universal safety net that
-# also cleans up rows already cached from before those filters existed, and
-# catches cases where a grocery store or big-box club's food counter is
-# still tagged as a restaurant by the source.
+# fetched data, but they have real limits — Google's own types are
+# inconsistent enough that legitimate restaurants (Starbucks, McDonald's)
+# carry "food_store" as a secondary type too, so that type can't be
+# blanket-excluded without also dropping real restaurants. A name-based
+# check here is both a universal safety net (cleans up rows already
+# cached from before the source-level filters existed) and the more
+# reliable signal for the ambiguous cases — specific known chains, plus
+# generic category words that are a strong "this isn't really a
+# restaurant" signal on their own.
 EXCLUDED_NAME_KEYWORDS = (
+    # Specific big-box / grocery chains
     "costco", "sam's club", "sams club", "walmart", "target",
     "kroger", "safeway", "publix", "whole foods", "trader joe",
     "aldi", "wegmans", "meijer", "h-e-b", "heb ", "food lion",
     "giant eagle", "stop & shop", "shoprite", "winn-dixie",
     "albertsons", "vons", "ralphs", "price chopper", "harris teeter",
     "food city", "smith's food", "fred meyer", "giant food",
+    # Generic category words — a store named "___ Grocery" or "___
+    # Market" is a grocery/convenience business regardless of chain,
+    # and no legitimate sit-down restaurant needs one of these words
+    # to describe itself. "market"/"mart" are checked with a leading
+    # space so they don't false-positive inside "Walmart" (already
+    # covered above) or "supermarket" (covered by "grocery" concepts
+    # anyway, but listed explicitly too for safety).
+    "grocery", "supermarket", "superstore", "supercenter",
+    " market", " mart", "warehouse club", "wholesale club",
+    "convenience store",
 )
+
+# The generic keywords above are deliberately broad and will occasionally
+# catch a real restaurant chain that happens to use one of those words in
+# its own name — "Boston Market" being the clearest example. Checked
+# before EXCLUDED_NAME_KEYWORDS, so these always win.
+EXCLUDED_NAME_EXCEPTIONS = ("boston market",)
 
 
 def _haversine_km(lat1, lng1, lat2, lng2):
@@ -449,6 +506,8 @@ def _normalize_name(name):
 
 def _is_excluded_name(name):
     lowered = name.lower()
+    if any(exception in lowered for exception in EXCLUDED_NAME_EXCEPTIONS):
+        return False
     return any(keyword in lowered for keyword in EXCLUDED_NAME_KEYWORDS)
 
 
@@ -1460,8 +1519,31 @@ class ThreadingHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     daemon_threads = True
 
 
+def _prewarm_chain_logos():
+    """Fetches and caches every curated chain's logo (see
+    server/chain_logos.py) up front, so common chains are already in the
+    disk cache before any user's search happens to be the first to
+    encounter them — this is what makes "preloaded" logos actually mean
+    something, on top of the domain-keyed cache already sharing one fetch
+    across every location of a chain. Runs in a background thread so it
+    never delays server startup or blocks request handling; staggered so
+    it doesn't hammer ~100 different sites in a burst."""
+    domains = sorted(set(CHAIN_DOMAINS.values()))
+    warmed = 0
+    for domain in domains:
+        try:
+            content_type, _ = _get_or_fetch_logo(domain)
+            if content_type:
+                warmed += 1
+        except Exception as e:
+            print(f"[WARN] Pre-warm failed for {domain}: {e}", flush=True)
+        time.sleep(0.3)
+    print(f"[INFO] Pre-warmed {warmed}/{len(domains)} chain logos", flush=True)
+
+
 def run(port=3000):
     init_db()
+    threading.Thread(target=_prewarm_chain_logos, daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     print(f"EatRate server running on http://localhost:{port}")
     server.serve_forever()

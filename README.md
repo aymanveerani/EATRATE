@@ -95,29 +95,41 @@ ranking of it (`GET /api/restaurants/popular` vs. `GET /api/restaurants/nearby`,
 
 Nearby-card images cascade through four tiers, best first:
 
-1. **The restaurant's actual logo**, scraped server-side from its own website
-   ([server/logo_fetch.py](server/logo_fetch.py) — stdlib `html.parser`, no dependencies) via
-   `GET /api/restaurants/:id/logo`. Looks for `<link rel="apple-touch-icon">`, then `og:image`,
-   then a plain `<link rel="icon">` in the page `<head>`. If the restaurant's website is a
-   location-finder subdomain (`locations.whataburger.com`) that 404s at its root, it retries the
-   base domain (`whataburger.com`), since brand assets almost always live there. Results — both
-   found and not-found — are cached to disk (`uploads/logos/`) so a given restaurant is scraped at
-   most once, not on every page view; a failed/slow site (some block scraping outright) just falls
-   through to the next tier, it never blocks the page.
+1. **The restaurant's actual logo.** For ~100 major US chains
+   ([server/chain_logos.py](server/chain_logos.py)), a hand-verified canonical domain is used
+   directly — matched against the restaurant's normalized name by substring, so "Chick-fil-A
+   #1234" or just "Panera" both resolve correctly — since Google/Yelp sometimes hand us a
+   location-finder subdomain (`locations.whataburger.com`) that 404s for a logo fetch even though
+   the chain obviously has a real logo. Otherwise it's scraped server-side from the restaurant's
+   own website ([server/logo_fetch.py](server/logo_fetch.py) — stdlib `html.parser`, no
+   dependencies) via `GET /api/restaurants/:id/logo`, looking for `<link rel="apple-touch-icon">`,
+   then `og:image`, then a plain `<link rel="icon">`. Either way, results — found and not-found —
+   are cached to disk **keyed by domain, not restaurant id**, so all 10 locations of a chain in the
+   DB share one cached fetch instead of each re-scraping the same site, and every curated chain's
+   logo is pre-fetched in a background thread on server startup
+   (`_prewarm_chain_logos` in `server/app.py`) so it's typically already cached before any user's
+   search is the first to encounter it. A failed/slow site (some block scraping outright) just
+   falls through to the next tier — it never blocks the page.
 2. **Google's favicon lookup** on the restaurant's website, at a real size (128px, not a
    stretched-up 64px) — a solid fallback for sites the scraper can't reach.
 3. **A real photo** (a user's own review photo, or the source's photo) for places with no
    discoverable website at all.
 4. **A cuisine icon**, last resort.
 
-**Grocery stores and big-box food courts are excluded**, not just poorly represented — Google
+**Grocery stores and big-box food courts are excluded**, not just poorly represented. Google
 search excludes `grocery_store`/`supermarket`/`warehouse_store`/etc. types outright, Yelp results
 are filtered by category alias (`grocery`, `wholesale_stores`, ...) after the fact since Yelp's API
 doesn't support excluding categories server-side, and OSM's ambiguous `food_court` tag was dropped
-entirely. On top of the source-level filters, a name-keyword blocklist (Costco, Sam's Club,
-Walmart, major grocery chains — see `EXCLUDED_NAME_KEYWORDS` in `server/app.py`) is applied at
-read time as a universal safety net, so it also cleans up rows already cached from before these
-filters existed.
+entirely. Type-based filtering has real limits, though — Google's own types are inconsistent
+enough that legitimate restaurants (Starbucks, McDonald's) carry `food_store` as a *secondary*
+type too, so that type can't be blanket-excluded without also dropping real restaurants. On top of
+the source-level filters, a name-keyword blocklist is applied at read time as a universal safety
+net (see `EXCLUDED_NAME_KEYWORDS` in `server/app.py`) — both specific chains (Costco, Sam's Club,
+Walmart, major grocery chains) and generic category words (grocery, market, mart, supercenter,
+...) that are a strong "not actually a restaurant" signal on their own, with a small exceptions
+list (`EXCLUDED_NAME_EXCEPTIONS`) for real chains that happen to use one of those words in their
+own name, like Boston Market. This also cleans up rows already cached from before these filters
+existed, not just newly-fetched ones.
 
 **There is no "every restaurant in America" dataset either** — that isn't free, and isn't legal to
 bulk-store from Google Places or Yelp without a paid contract. Instead it asks the browser for the
