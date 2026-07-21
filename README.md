@@ -95,18 +95,24 @@ ranking of it (`GET /api/restaurants/popular` vs. `GET /api/restaurants/nearby`,
 
 Nearby-card images cascade through four tiers, best first:
 
-1. **The restaurant's actual logo.** For ~100 major US chains
-   ([server/chain_logos.py](server/chain_logos.py)), a hand-verified canonical domain is used
-   directly — matched against the restaurant's normalized name by substring, so "Chick-fil-A
-   #1234" or just "Panera" both resolve correctly — since Google/Yelp sometimes hand us a
-   location-finder subdomain (`locations.whataburger.com`) that 404s for a logo fetch even though
-   the chain obviously has a real logo. Otherwise it's scraped server-side from the restaurant's
-   own website ([server/logo_fetch.py](server/logo_fetch.py) — stdlib `html.parser`, no
-   dependencies) via `GET /api/restaurants/:id/logo`, looking for `<link rel="apple-touch-icon">`,
-   then `og:image`, then a plain `<link rel="icon">`. Either way, results — found and not-found —
-   are cached to disk **keyed by domain, not restaurant id**, so all 10 locations of a chain in the
-   DB share one cached fetch instead of each re-scraping the same site, and every curated chain's
-   logo is pre-fetched in a background thread on server startup
+1. **The restaurant's actual logo.** For ~770 US chains
+   ([server/chain_logos.py](server/chain_logos.py)), a canonical domain is used directly — matched
+   against the restaurant's normalized name by substring, so "Chick-fil-A #1234" or just "Panera"
+   both resolve correctly — since Google/Yelp sometimes hand us a location-finder subdomain
+   (`locations.whataburger.com`) that 404s for a logo fetch even though the chain obviously has a
+   real logo. This list is built in two tiers: a small hand-curated set of the highest-traffic
+   chains with deliberately short match keys, plus a much larger set bulk-imported from Wikidata's
+   structured data (every restaurant/cafe/pizzeria/bakery/ice-cream-parlor/fast-food chain with a
+   US country or headquarters claim and an official website on record) — real, sourced data, not a
+   guessed or hand-typed list; every domain was DNS-verified and generic third-party platforms
+   (Facebook, Wayback Machine) were filtered out before inclusion. Otherwise it's scraped
+   server-side from the restaurant's own website
+   ([server/logo_fetch.py](server/logo_fetch.py) — stdlib `html.parser`, no dependencies) via
+   `GET /api/restaurants/:id/logo`, looking for `<link rel="apple-touch-icon">`, then `og:image`,
+   then a plain `<link rel="icon">`. Either way, results — found and not-found — are cached to disk
+   **keyed by domain, not restaurant id**, so all 10 locations of a chain in the DB share one
+   cached fetch instead of each re-scraping the same site, and every chain's logo is pre-fetched in
+   a parallelized background thread on server startup (~770 domains in under a minute)
    (`_prewarm_chain_logos` in `server/app.py`) so it's typically already cached before any user's
    search is the first to encounter it. A failed/slow site (some block scraping outright) just
    falls through to the next tier — it never blocks the page.

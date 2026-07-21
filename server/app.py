@@ -7,6 +7,7 @@ import re
 import socketserver
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from http import HTTPStatus
 from http.cookies import SimpleCookie
@@ -1519,26 +1520,35 @@ class ThreadingHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     daemon_threads = True
 
 
+PREWARM_WORKERS = 16  # concurrent logo fetches during startup pre-warm —
+# ~770 domains one at a time (even lightly staggered) would take close to
+# an hour; fetching them in parallel (these are independent, unrelated
+# sites, so nothing is hammered) brings that down to low minutes
+
+
 def _prewarm_chain_logos():
-    """Fetches and caches every curated chain's logo (see
+    """Fetches and caches every curated + bulk-imported chain's logo (see
     server/chain_logos.py) up front, so common chains are already in the
     disk cache before any user's search happens to be the first to
     encounter them — this is what makes "preloaded" logos actually mean
     something, on top of the domain-keyed cache already sharing one fetch
     across every location of a chain. Runs in a background thread so it
-    never delays server startup or blocks request handling; staggered so
-    it doesn't hammer ~100 different sites in a burst."""
+    never delays server startup or blocks request handling."""
     domains = sorted(set(CHAIN_DOMAINS.values()))
     warmed = 0
-    for domain in domains:
-        try:
-            content_type, _ = _get_or_fetch_logo(domain)
-            if content_type:
-                warmed += 1
-        except Exception as e:
-            print(f"[WARN] Pre-warm failed for {domain}: {e}", flush=True)
-        time.sleep(0.3)
-    print(f"[INFO] Pre-warmed {warmed}/{len(domains)} chain logos", flush=True)
+    t0 = time.monotonic()
+    with ThreadPoolExecutor(max_workers=PREWARM_WORKERS) as pool:
+        futures = {pool.submit(_get_or_fetch_logo, domain): domain for domain in domains}
+        for future in as_completed(futures):
+            domain = futures[future]
+            try:
+                content_type, _ = future.result()
+                if content_type:
+                    warmed += 1
+            except Exception as e:
+                print(f"[WARN] Pre-warm failed for {domain}: {e}", flush=True)
+    elapsed = time.monotonic() - t0
+    print(f"[INFO] Pre-warmed {warmed}/{len(domains)} chain logos in {elapsed:.0f}s", flush=True)
 
 
 def run(port=3000):
