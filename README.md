@@ -93,22 +93,29 @@ bulk-store from Google Places or Yelp without a paid contract. Instead it asks t
 user's location and fetches real restaurants within a 5-mile radius, live, on each request that
 needs fresh data.
 
-There are two data sources, tried in order:
+There are three data sources, tried in order:
 
-- **[server/yelp.py](server/yelp.py) — primary, if `YELP_API_KEY` is set.** Yelp Fusion's free
+- **[server/google_places.py](server/google_places.py) — primary, if `GOOGLE_PLACES_API_KEY` is
+  set.** The most complete US restaurant listings of the three. Requires a Google Cloud project
+  with **billing enabled** — a monthly free credit covers light usage at pilot scale, then it's
+  pay-per-request, the only source here with real ongoing cost risk. No photo is pulled from
+  Google: fetching an actual image requires passing the API key as a request credential, and
+  putting that in a client-facing `<img src>` would leak the secret key to every visitor's
+  browser, so Google-sourced places fall back to the favicon/cuisine-icon chain like any place
+  with no photo.
+- **[server/yelp.py](server/yelp.py) — second, if `YELP_API_KEY` is set.** Yelp Fusion's free
   tier (no billing required, just a developer account) has restaurant-specific data: real names,
-  categories, and actual business photos — the biggest single upgrade over OSM. Get a key at
-  https://www.yelp.com/developers/v3/manage_app, then set `YELP_API_KEY` (see table below).
-- **[server/osm.py](server/osm.py) — fallback, always available.** OpenStreetMap's Overpass API
-  needs no key or account at all, so it's what runs if Yelp isn't configured, or if a Yelp call
-  fails for any reason (bad key, rate limit, network issue) — the nearby endpoint never just
-  errors out because of one source being down. Coverage reflects OSM's crowd-sourced data: good in
-  cities, sparser in small towns — the real tradeoff of "free and keyless."
+  categories, and actual business photos. Runs if Google isn't configured or a Google call fails.
+  Get a key at https://www.yelp.com/developers/v3/manage_app.
+- **[server/osm.py](server/osm.py) — last resort, always available.** OpenStreetMap's Overpass API
+  needs no key or account at all, so it's what runs if neither of the above is configured, or if
+  both fail — the nearby endpoint never just errors out because one source is down. Coverage
+  reflects OSM's crowd-sourced data: good in cities, sparser in small towns.
 
-Both sources cache their results in `map_cache`, keyed by a coarse rounding of the search location
-(shared table, distinct key prefixes so the two never collide), for 7 days — repeat visits from the
-same area reuse the cached fetch instead of re-hitting either API. Every fetched place becomes a
-real row in `restaurants` (deduped on Yelp's business id or OSM's node id via a unique index) — the
+All three cache their results in `map_cache`, keyed by a coarse rounding of the search location
+(shared table, distinct key prefixes per source so they never collide), for 7 days — repeat visits
+from the same area reuse the cached fetch instead of re-hitting any API. Every fetched place
+becomes a real row in `restaurants` (deduped on each source's own id via a unique index) — the
 same restaurant entity users can post about and businesses can claim, not a separate read-only
 layer.
 
@@ -191,16 +198,24 @@ until you set them):
 | `ADMIN_SECRET` | Unlocks `/admin.html` and the `/api/admin/*` endpoints | Admin panel returns `503`, refuses all access |
 | `REDEMPTION_ENABLED` | Turns gift card redemption back on | Redemption returns `403` |
 | `ANTHROPIC_API_KEY` | Real AI-generated business insights | Falls back to a heuristic summary |
-| `YELP_API_KEY` | Restaurant data + real photos from Yelp for "nearby" search | Falls back to OpenStreetMap (still works, just sparser data, no real photos) |
+| `GOOGLE_PLACES_API_KEY` | Most complete restaurant data for "nearby" search (primary source) | Falls back to Yelp, then OpenStreetMap |
+| `YELP_API_KEY` | Restaurant data + real photos from Yelp for "nearby" search (used if Google isn't set) | Falls back to OpenStreetMap (still works, just sparser data, no real photos) |
 | `REPORT_EMAIL_TO` | Where report notifications get sent | — |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASSWORD` | Credentials for sending that email | Reports are logged to stdout instead of emailed (still saved in the DB either way) |
 
 Set `ADMIN_SECRET` to something long and random — treat it like a password, don't commit it. On
 Railway: service → Variables → add it there. Locally: `ADMIN_SECRET=... python3 run.py`.
 
+To get `GOOGLE_PLACES_API_KEY`: create a project at https://console.cloud.google.com, enable
+"Places API (New)", set up a billing account (required even for the free monthly credit — this is
+the one source here with real ongoing cost risk if usage grows), then create an API key under
+"APIs & Services → Credentials". Consider restricting the key to the Places API and to your
+server's IP once deployed.
+
 To get `YELP_API_KEY`: sign up at https://www.yelp.com/developers, create an app under "Manage
 App" (https://www.yelp.com/developers/v3/manage_app), and copy the API Key it gives you — no
-billing information required for the free tier. Set it the same way as `ADMIN_SECRET` above.
+billing information required for the free tier. Set either key the same way as `ADMIN_SECRET`
+above.
 
 ## Gift cards: simulated by default
 

@@ -17,6 +17,8 @@ from server.ai_insights import generate_insights
 from server.db import get_connection, init_db, UPLOADS_DIR
 from server.giftcards import issue_gift_card
 from server.notify import notify_report
+from server.google_places import GooglePlacesError
+from server.google_places import sync_nearby as google_sync_nearby
 from server.osm import OsmError, sync_bbox
 from server.yelp import YelpError
 from server.yelp import sync_nearby as yelp_sync_nearby
@@ -311,17 +313,20 @@ def nearby_restaurants(ctx):
 
     conn = get_connection()
     try:
-        # Yelp has more complete, restaurant-specific data (including real
-        # business photos) than OSM, so prefer it when a key is configured;
-        # fall back to OSM (no key/account needed) if it's not set up or a
-        # call fails.
-        rows = yelp_sync_nearby(conn, lat, lng, NEARBY_RADIUS_KM)
-    except YelpError:
+        # Google has the most complete US restaurant listings, so prefer it
+        # when a key is configured; fall back through Yelp (also needs a
+        # key, but no billing) and finally OSM (no key/account needed at
+        # all) so the feature keeps working with any subset configured.
+        rows = google_sync_nearby(conn, lat, lng, NEARBY_RADIUS_KM)
+    except GooglePlacesError:
         try:
-            rows = sync_bbox(conn, lat - lat_delta, lng - lng_delta, lat + lat_delta, lng + lng_delta)
-        except OsmError as e:
-            conn.close()
-            raise ApiError(400, str(e))
+            rows = yelp_sync_nearby(conn, lat, lng, NEARBY_RADIUS_KM)
+        except YelpError:
+            try:
+                rows = sync_bbox(conn, lat - lat_delta, lng - lng_delta, lat + lat_delta, lng + lng_delta)
+            except OsmError as e:
+                conn.close()
+                raise ApiError(400, str(e))
 
     rows = list(rows)
     random.shuffle(rows)
