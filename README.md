@@ -98,11 +98,12 @@ There are three data sources, tried in order:
 - **[server/google_places.py](server/google_places.py) — primary, if `GOOGLE_PLACES_API_KEY` is
   set.** The most complete US restaurant listings of the three. Requires a Google Cloud project
   with **billing enabled** — a monthly free credit covers light usage at pilot scale, then it's
-  pay-per-request, the only source here with real ongoing cost risk. No photo is pulled from
-  Google: fetching an actual image requires passing the API key as a request credential, and
-  putting that in a client-facing `<img src>` would leak the secret key to every visitor's
-  browser, so Google-sourced places fall back to the favicon/cuisine-icon chain like any place
-  with no photo.
+  pay-per-request, the only source here with real ongoing cost risk. Real photos work too, but not
+  via a direct Google URL — fetching one requires the API key as a request credential, and putting
+  that in a client-facing `<img src>` would leak the secret to every visitor's browser. Instead
+  `GET /api/restaurants/:id/photo` (in `server/app.py`) fetches the image server-side and caches
+  it to disk under `uploads/google_photos/`, so it's a live Google call at most once per
+  restaurant rather than on every page view, and the key never reaches the browser.
 - **[server/yelp.py](server/yelp.py) — second, if `YELP_API_KEY` is set.** Yelp Fusion's free
   tier (no billing required, just a developer account) has restaurant-specific data: real names,
   categories, and actual business photos. Runs if Google isn't configured or a Google call fails.

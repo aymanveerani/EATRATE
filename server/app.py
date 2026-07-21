@@ -18,6 +18,7 @@ from server.db import get_connection, init_db, UPLOADS_DIR
 from server.giftcards import issue_gift_card
 from server.notify import notify_report
 from server.google_places import GooglePlacesError
+from server.google_places import fetch_photo_bytes as google_fetch_photo_bytes
 from server.google_places import sync_nearby as google_sync_nearby
 from server.osm import OsmError, sync_bbox
 from server.yelp import YelpError
@@ -62,6 +63,15 @@ def public_user(row):
 
 def public_restaurant(row):
     keys = row.keys()
+    # "osm_image" is the generic "a real external photo of this place"
+    # slot the frontend falls back to — for Google-sourced restaurants
+    # that's our own photo-proxy URl (never a direct Google URL, since
+    # fetching one requires the API key as a credential), so it overrides
+    # whatever's actually stored in the osm_image column for those rows.
+    if "google_photo_name" in keys and row["google_photo_name"]:
+        external_image = f"/api/restaurants/{row['id']}/photo"
+    else:
+        external_image = row["osm_image"] if "osm_image" in keys else ""
     return {
         "id": row["id"],
         "name": row["name"],
@@ -71,7 +81,7 @@ def public_restaurant(row):
         "lng": row["lng"] if "lng" in keys else None,
         "soft_launch_partner": bool(row["soft_launch_partner"]) if "soft_launch_partner" in keys else False,
         "website_domain": row["website_domain"] if "website_domain" in keys else "",
-        "osm_image": row["osm_image"] if "osm_image" in keys else "",
+        "osm_image": external_image,
     }
 
 
@@ -246,6 +256,47 @@ def list_restaurants(ctx):
         item["avg_rating"] = round(row["avg_rating"], 1)
         out.append(item)
     ctx.send_json(HTTPStatus.OK, {"restaurants": out})
+
+
+GOOGLE_PHOTO_CACHE_DIR = os.path.join(UPLOADS_DIR, "google_photos")
+
+
+@route("GET", r"/api/restaurants/(?P<restaurant_id>\d+)/photo")
+def restaurant_photo(ctx, restaurant_id):
+    """Proxies a restaurant's Google Places photo. The API key never
+    reaches the client — it's only ever used in the server-side call to
+    Google — and the result is cached to disk so it's fetched from Google
+    at most once per restaurant, not on every page view."""
+    ctx.require_user()
+
+    # Google Places photos are served as JPEG in practice, so the cache is
+    # keyed/served as .jpg unconditionally rather than tracking each
+    # photo's real content type — a live fetch still uses the type Google
+    # actually returns for the first response.
+    cache_path = os.path.join(GOOGLE_PHOTO_CACHE_DIR, f"{restaurant_id}.jpg")
+    if os.path.isfile(cache_path):
+        with open(cache_path, "rb") as f:
+            data = f.read()
+        ctx.send_bytes(HTTPStatus.OK, "image/jpeg", data, cache_seconds=86400)
+        return
+
+    conn = get_connection()
+    restaurant = conn.execute(
+        "SELECT google_photo_name FROM restaurants WHERE id = ?", (restaurant_id,)
+    ).fetchone()
+    conn.close()
+    if restaurant is None or not restaurant["google_photo_name"]:
+        raise ApiError(404, "No photo available for this restaurant.")
+
+    try:
+        content_type, data = google_fetch_photo_bytes(restaurant["google_photo_name"])
+    except GooglePlacesError as e:
+        raise ApiError(502, str(e))
+
+    os.makedirs(GOOGLE_PHOTO_CACHE_DIR, exist_ok=True)
+    with open(cache_path, "wb") as f:
+        f.write(data)
+    ctx.send_bytes(HTTPStatus.OK, content_type, data, cache_seconds=86400)
 
 
 @route("GET", r"/api/restaurants/(?P<restaurant_id>\d+)")
@@ -1142,6 +1193,17 @@ class RequestContext:
             self.handler.send_header(name, value)
         self.handler.end_headers()
         self.handler.wfile.write(payload)
+
+    def send_bytes(self, status, content_type, data, cache_seconds=None):
+        self.handler.send_response(status)
+        self.handler.send_header("Content-Type", content_type)
+        self.handler.send_header("Content-Length", str(len(data)))
+        if cache_seconds:
+            self.handler.send_header("Cache-Control", f"public, max-age={cache_seconds}")
+        for name, value in self._pending_headers:
+            self.handler.send_header(name, value)
+        self.handler.end_headers()
+        self.handler.wfile.write(data)
 
 
 class Handler(BaseHTTPRequestHandler):

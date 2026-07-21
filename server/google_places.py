@@ -10,11 +10,13 @@ configured or a call fails — the app works with any subset of these three
 turned on.
 
 Google's Places photo media endpoint requires the API key as a request
-credential to actually fetch an image, so unlike Yelp's plain image_url we
-deliberately don't build a client-facing photo URL here — putting one in an
-<img src> would leak the secret key to every visitor's browser. Google-
-sourced restaurants just fall back to the favicon/cuisine-icon chain
-client-side like any place with no external photo.
+credential to actually fetch an image, so we never build a client-facing
+URL straight to Google for it — that would leak the secret key to every
+visitor's browser. Instead we store just the photo's resource name here,
+and GET /api/restaurants/:id/photo (server/app.py) fetches the actual
+image bytes server-side (via fetch_photo_bytes below) and serves them from
+our own domain, caching the result to disk so it's a one-time cost per
+restaurant rather than a live Google call on every page view.
 """
 
 import json
@@ -25,14 +27,19 @@ from datetime import datetime, timedelta
 
 GOOGLE_PLACES_API_KEY = os.environ.get("GOOGLE_PLACES_API_KEY", "")
 SEARCH_URL = "https://places.googleapis.com/v1/places:searchNearby"
+PHOTO_MEDIA_URL = "https://places.googleapis.com/v1/{photo_name}/media"
+PHOTO_MAX_WIDTH_PX = 400
 MAX_RESULTS = 20  # Google's per-request cap for Nearby Search (New)
 MAX_RADIUS_METERS = 50000  # Google's hard limit
 REQUEST_TIMEOUT = 10
 CACHE_TTL_DAYS = 7
 CACHE_SNAP_DEGREES = 0.03  # ~3.3km — see server/osm.py for why this exists
-QUERY_VERSION = 1
+QUERY_VERSION = 2  # bumped: now also fetches places.photos
 
-FIELD_MASK = "places.id,places.displayName,places.location,places.formattedAddress,places.primaryTypeDisplayName"
+FIELD_MASK = (
+    "places.id,places.displayName,places.location,places.formattedAddress,"
+    "places.primaryTypeDisplayName,places.photos"
+)
 
 
 class GooglePlacesError(Exception):
@@ -84,6 +91,11 @@ def _fetch_from_google(lat, lng, radius_m):
         loc = p.get("location") or {}
         if not name or loc.get("latitude") is None or loc.get("longitude") is None:
             continue
+        photos = p.get("photos") or []
+        # Not truncated like the other fields below — this is an opaque
+        # resource token, not display text, and truncating it corrupts it
+        # into an invalid reference rather than a shorter-but-valid one.
+        photo_name = (photos[0].get("name") or "") if photos else ""
         places.append(
             {
                 "google_place_id": p["id"],
@@ -92,9 +104,40 @@ def _fetch_from_google(lat, lng, radius_m):
                 "address": (p.get("formattedAddress") or "")[:300],
                 "lat": loc["latitude"],
                 "lng": loc["longitude"],
+                "photo_name": photo_name,
             }
         )
     return places
+
+
+def fetch_photo_bytes(photo_name):
+    """Fetches actual image bytes for a stored photo resource name (e.g.
+    "places/ABC123/photos/XYZ") server-side, using the API key as a request
+    credential the client never sees. Returns (content_type, bytes).
+    Raises GooglePlacesError on any failure."""
+    if not GOOGLE_PLACES_API_KEY:
+        raise GooglePlacesError("No Google Places API key configured.")
+
+    url = f"{PHOTO_MEDIA_URL.format(photo_name=photo_name)}?maxWidthPx={PHOTO_MAX_WIDTH_PX}&skipHttpRedirect=true"
+    req = urllib.request.Request(url, headers={"X-Goog-Api-Key": GOOGLE_PLACES_API_KEY})
+    try:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+            meta = json.loads(resp.read().decode("utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        raise GooglePlacesError(f"Couldn't reach Google Places photo endpoint: {e}")
+
+    photo_uri = meta.get("photoUri")
+    if not photo_uri:
+        raise GooglePlacesError("No photoUri in Google Places photo response.")
+
+    try:
+        with urllib.request.urlopen(photo_uri, timeout=REQUEST_TIMEOUT) as resp:
+            content_type = resp.headers.get("Content-Type", "image/jpeg")
+            data = resp.read()
+    except OSError as e:
+        raise GooglePlacesError(f"Couldn't download Google Places photo: {e}")
+
+    return content_type, data
 
 
 def sync_nearby(conn, lat, lng, radius_km):
@@ -114,11 +157,12 @@ def sync_nearby(conn, lat, lng, radius_km):
         places = _fetch_from_google(lat, lng, radius_km * 1000)
         for place in places:
             conn.execute(
-                "INSERT INTO restaurants (name, cuisine, address, lat, lng, google_place_id, source) "
-                "VALUES (?, ?, ?, ?, ?, ?, 'google') "
+                "INSERT INTO restaurants (name, cuisine, address, lat, lng, google_place_id, source, google_photo_name) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'google', ?) "
                 "ON CONFLICT(google_place_id) WHERE google_place_id IS NOT NULL DO UPDATE SET "
                 "name = excluded.name, cuisine = excluded.cuisine, address = excluded.address, "
-                "lat = excluded.lat, lng = excluded.lng",
+                "lat = excluded.lat, lng = excluded.lng, "
+                "google_photo_name = CASE WHEN excluded.google_photo_name != '' THEN excluded.google_photo_name ELSE restaurants.google_photo_name END",
                 (
                     place["name"],
                     place["cuisine"],
@@ -126,6 +170,7 @@ def sync_nearby(conn, lat, lng, radius_km):
                     place["lat"],
                     place["lng"],
                     place["google_place_id"],
+                    place["photo_name"],
                 ),
             )
         conn.execute(

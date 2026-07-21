@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS restaurants (
     osm_id TEXT,
     yelp_id TEXT,
     google_place_id TEXT,
+    google_photo_name TEXT NOT NULL DEFAULT '',
     source TEXT NOT NULL DEFAULT 'user',
     soft_launch_partner INTEGER NOT NULL DEFAULT 0,
     website_domain TEXT NOT NULL DEFAULT '',
@@ -142,6 +143,7 @@ MIGRATIONS = [
     "ALTER TABLE restaurants ADD COLUMN osm_image TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE restaurants ADD COLUMN yelp_id TEXT",
     "ALTER TABLE restaurants ADD COLUMN google_place_id TEXT",
+    "ALTER TABLE restaurants ADD COLUMN google_photo_name TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE business_claims ADD COLUMN trial_ends_at TEXT",
     "ALTER TABLE business_claims ADD COLUMN cached_insights TEXT",
     "ALTER TABLE business_claims ADD COLUMN insights_generated_at TEXT",
@@ -163,6 +165,11 @@ POST_MIGRATION_STATEMENTS = [
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_restaurants_osm_id ON restaurants(osm_id) WHERE osm_id IS NOT NULL",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_restaurants_yelp_id ON restaurants(yelp_id) WHERE yelp_id IS NOT NULL",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_restaurants_google_place_id ON restaurants(google_place_id) WHERE google_place_id IS NOT NULL",
+    # Every nearby/feed request filters restaurants by a lat/lng range —
+    # without this, that's a full table scan that gets slower as the table
+    # grows across sessions. This was the main cause of "nearby" feeling
+    # slow; it has nothing to do with which external source is configured.
+    "CREATE INDEX IF NOT EXISTS idx_restaurants_lat_lng ON restaurants(lat, lng)",
 ]
 
 
