@@ -306,6 +306,15 @@ def restaurant_photo(ctx, restaurant_id):
 
 LOGO_CACHE_DIR = os.path.join(UPLOADS_DIR, "logos")
 
+# Bump whenever logo_fetch.py's scraping logic, the base-domain retry, or
+# CHAIN_DOMAINS' matching rules change in a way that could flip a past
+# failure into a success (or vice versa). Without this, a domain that
+# failed to scrape under an older, buggier version of this code would stay
+# cached as "no logo" forever — the cache has no TTL and nothing else ever
+# invalidates it, so a real fix in the code would silently never take
+# effect for restaurants already seen once.
+LOGO_CACHE_VERSION = 2
+
 
 def _sanitize_domain_for_filename(domain):
     # Domains only ever contain [a-z0-9.-], already filesystem-safe on
@@ -333,7 +342,7 @@ def _get_or_fetch_logo(domain):
     shares one cached fetch instead of each re-scraping the same site.
     A cached negative result is ("", b""). Never raises; a failed fetch is
     cached as a negative result the same way a found one is cached."""
-    key = _sanitize_domain_for_filename(domain)
+    key = f"v{LOGO_CACHE_VERSION}_{_sanitize_domain_for_filename(domain)}"
     data_path = os.path.join(LOGO_CACHE_DIR, f"{key}.bin")
     type_path = os.path.join(LOGO_CACHE_DIR, f"{key}.type")
 
@@ -1520,10 +1529,14 @@ class ThreadingHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     daemon_threads = True
 
 
-PREWARM_WORKERS = 16  # concurrent logo fetches during startup pre-warm —
+PREWARM_WORKERS = 8  # concurrent logo fetches during startup pre-warm —
 # ~770 domains one at a time (even lightly staggered) would take close to
 # an hour; fetching them in parallel (these are independent, unrelated
-# sites, so nothing is hammered) brings that down to low minutes
+# sites, so nothing is hammered) brings that down to low minutes. Kept
+# modest rather than higher, since this runs on every deploy/restart and
+# competes for the same CPU/network as live user requests on a small
+# hosting instance — a live page load should never feel slower because
+# the server happens to be mid pre-warm.
 
 
 def _prewarm_chain_logos():

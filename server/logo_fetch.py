@@ -17,9 +17,13 @@ import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
 
-REQUEST_TIMEOUT = 5  # scraping an arbitrary restaurant's website is best-
-# effort — fail fast so one slow site doesn't hang the request; the client
-# falls back to the favicon lookup on any failure anyway
+REQUEST_TIMEOUT = 2.5  # scraping an arbitrary restaurant's website is
+# best-effort — fail fast so one slow site doesn't hang the request; the
+# client falls back to the favicon lookup on any failure anyway. A single
+# logo fetch can make up to 2 requests (HTML page, then the image itself)
+# against up to 2 domain candidates (see _get_or_fetch_logo's base-domain
+# retry in server/app.py), so this bounds a single live user-facing image
+# load to at most ~4x this value even in the worst case
 MAX_HTML_BYTES = 300_000  # the icon we want is always in <head>; no need
 # to download an entire bloated page to find it
 MAX_IMAGE_BYTES = 2_000_000
