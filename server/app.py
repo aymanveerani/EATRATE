@@ -19,6 +19,8 @@ from server.notify import notify_report
 from server.google_places import GooglePlacesError
 from server.google_places import fetch_photo_bytes as google_fetch_photo_bytes
 from server.google_places import sync_nearby as google_sync_nearby
+from server.logo_fetch import LogoFetchError
+from server.logo_fetch import fetch_logo_bytes as logo_fetch_bytes
 from server.osm import OsmError, sync_bbox
 from server.yelp import YelpError
 from server.yelp import sync_nearby as yelp_sync_nearby
@@ -298,6 +300,65 @@ def restaurant_photo(ctx, restaurant_id):
     ctx.send_bytes(HTTPStatus.OK, content_type, data, cache_seconds=86400)
 
 
+LOGO_CACHE_DIR = os.path.join(UPLOADS_DIR, "logos")
+
+
+@route("GET", r"/api/restaurants/(?P<restaurant_id>\d+)/logo")
+def restaurant_logo(ctx, restaurant_id):
+    """Proxies a restaurant's actual logo, scraped from its own website
+    (server/logo_fetch.py) — a real brand mark rather than a favicon-
+    service guess. Cached to disk after the first fetch, including a
+    cached "not found" result (empty type file), so a site with no
+    discoverable icon isn't re-scraped on every page view."""
+    ctx.require_user()
+
+    data_path = os.path.join(LOGO_CACHE_DIR, f"{restaurant_id}.bin")
+    type_path = os.path.join(LOGO_CACHE_DIR, f"{restaurant_id}.type")
+    if os.path.isfile(type_path):
+        with open(type_path) as f:
+            content_type = f.read().strip()
+        if not content_type:
+            raise ApiError(404, "No logo available for this restaurant.")
+        with open(data_path, "rb") as f:
+            data = f.read()
+        ctx.send_bytes(HTTPStatus.OK, content_type, data, cache_seconds=604800)
+        return
+
+    conn = get_connection()
+    restaurant = conn.execute(
+        "SELECT website_domain FROM restaurants WHERE id = ?", (restaurant_id,)
+    ).fetchone()
+    conn.close()
+    domain = restaurant["website_domain"] if restaurant else ""
+
+    os.makedirs(LOGO_CACHE_DIR, exist_ok=True)
+    content_type, data = None, None
+    if domain:
+        # A location-finder subdomain (locations.whataburger.com,
+        # order.chipotle.com) often 404s at its root — the actual brand
+        # assets live on the main domain, so try that too before giving up.
+        labels = domain.split(".")
+        base_domain = ".".join(labels[-2:]) if len(labels) > 2 else None
+        for candidate_domain in [domain] + ([base_domain] if base_domain else []):
+            try:
+                content_type, data = logo_fetch_bytes(candidate_domain)
+                break
+            except LogoFetchError:
+                continue
+
+    if content_type is None:
+        open(data_path, "wb").close()
+        with open(type_path, "w") as f:
+            f.write("")
+        raise ApiError(404, "No logo found for this restaurant.")
+
+    with open(data_path, "wb") as f:
+        f.write(data)
+    with open(type_path, "w") as f:
+        f.write(content_type)
+    ctx.send_bytes(HTTPStatus.OK, content_type, data, cache_seconds=604800)
+
+
 @route("GET", r"/api/restaurants/(?P<restaurant_id>\d+)")
 def get_restaurant(ctx, restaurant_id):
     user = ctx.require_user()
@@ -357,6 +418,21 @@ NEARBY_RESULT_CAP = 10  # shown as a vertical list now, not a horizontal
 DEDUP_RADIUS_KM = 0.12  # ~2 city blocks — same building, not just "close"
 SOURCE_PRIORITY = {"google": 0, "yelp": 1, "osm": 2, "user": 3}
 
+# Source-level type/category filters (see google_places.py's excludedTypes
+# and yelp.py's EXCLUDED_CATEGORY_ALIASES) keep most of these out of newly-
+# fetched data, but a name-based check here is a universal safety net that
+# also cleans up rows already cached from before those filters existed, and
+# catches cases where a grocery store or big-box club's food counter is
+# still tagged as a restaurant by the source.
+EXCLUDED_NAME_KEYWORDS = (
+    "costco", "sam's club", "sams club", "walmart", "target",
+    "kroger", "safeway", "publix", "whole foods", "trader joe",
+    "aldi", "wegmans", "meijer", "h-e-b", "heb ", "food lion",
+    "giant eagle", "stop & shop", "shoprite", "winn-dixie",
+    "albertsons", "vons", "ralphs", "price chopper", "harris teeter",
+    "food city", "smith's food", "fred meyer", "giant food",
+)
+
 
 def _haversine_km(lat1, lng1, lat2, lng2):
     r = 6371.0
@@ -371,11 +447,18 @@ def _normalize_name(name):
     return re.sub(r"[^a-z0-9]", "", name.lower())
 
 
+def _is_excluded_name(name):
+    lowered = name.lower()
+    return any(keyword in lowered for keyword in EXCLUDED_NAME_KEYWORDS)
+
+
 def _dedupe_and_sort_by_distance(rows, lat, lng):
     """Sorts by real distance from (lat, lng) — replaces the old
     random.shuffle, which is why "nearest to you" wasn't actually nearest —
     and collapses same-place duplicates across sources, preferring the
-    highest-priority source's row (see SOURCE_PRIORITY)."""
+    highest-priority source's row (see SOURCE_PRIORITY). Also drops grocery
+    stores / big-box food counts (see EXCLUDED_NAME_KEYWORDS)."""
+    rows = [r for r in rows if not _is_excluded_name(r["name"])]
     scored = [(_haversine_km(lat, lng, r["lat"], r["lng"]), r) for r in rows]
     scored.sort(key=lambda t: t[0])
 

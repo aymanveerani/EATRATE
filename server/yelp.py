@@ -23,7 +23,13 @@ MAX_RADIUS_METERS = 40000  # Yelp's hard limit (~24.8mi), well over our 5mi sear
 REQUEST_TIMEOUT = 10
 CACHE_TTL_DAYS = 7
 CACHE_SNAP_DEGREES = 0.03  # ~3.3km — see server/osm.py for why this exists
-QUERY_VERSION = 1
+QUERY_VERSION = 2  # bumped: now excludes grocery/wholesale category aliases
+
+# The "food" category we search under is broad enough to include grocery
+# and wholesale-club listings alongside actual restaurants — Yelp's search
+# doesn't support excluding categories server-side, so filter afterward by
+# category alias instead.
+EXCLUDED_CATEGORY_ALIASES = {"grocery", "convenience", "wholesale_stores", "discountstore"}
 
 
 class YelpError(Exception):
@@ -60,6 +66,9 @@ def _fetch_from_yelp(lat, lng, radius_m):
     places = []
     for biz in body.get("businesses", []):
         if biz.get("is_closed") or not biz.get("name"):
+            continue
+        categories = biz.get("categories", [])
+        if any(c.get("alias") in EXCLUDED_CATEGORY_ALIASES for c in categories):
             continue
         coords = biz.get("coordinates") or {}
         if coords.get("latitude") is None or coords.get("longitude") is None:

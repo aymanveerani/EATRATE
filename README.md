@@ -93,10 +93,31 @@ card component and hit the same underlying per-area restaurant data — popular 
 ranking of it (`GET /api/restaurants/popular` vs. `GET /api/restaurants/nearby`, sharing
 `_fetch_nearby_rows`/`_serialize_with_stats` in `server/app.py`).
 
-Nearby-card images are a company logo first (Google's favicon lookup on the restaurant's website,
-at a real size — 128px, not a stretched-up 64px — so it's the actual brand mark, not a blurry
-icon), falling back to a real photo (a user's own review photo, or the source's photo) only for
-places with no discoverable logo, and a cuisine icon as the last resort.
+Nearby-card images cascade through four tiers, best first:
+
+1. **The restaurant's actual logo**, scraped server-side from its own website
+   ([server/logo_fetch.py](server/logo_fetch.py) — stdlib `html.parser`, no dependencies) via
+   `GET /api/restaurants/:id/logo`. Looks for `<link rel="apple-touch-icon">`, then `og:image`,
+   then a plain `<link rel="icon">` in the page `<head>`. If the restaurant's website is a
+   location-finder subdomain (`locations.whataburger.com`) that 404s at its root, it retries the
+   base domain (`whataburger.com`), since brand assets almost always live there. Results — both
+   found and not-found — are cached to disk (`uploads/logos/`) so a given restaurant is scraped at
+   most once, not on every page view; a failed/slow site (some block scraping outright) just falls
+   through to the next tier, it never blocks the page.
+2. **Google's favicon lookup** on the restaurant's website, at a real size (128px, not a
+   stretched-up 64px) — a solid fallback for sites the scraper can't reach.
+3. **A real photo** (a user's own review photo, or the source's photo) for places with no
+   discoverable website at all.
+4. **A cuisine icon**, last resort.
+
+**Grocery stores and big-box food courts are excluded**, not just poorly represented — Google
+search excludes `grocery_store`/`supermarket`/`warehouse_store`/etc. types outright, Yelp results
+are filtered by category alias (`grocery`, `wholesale_stores`, ...) after the fact since Yelp's API
+doesn't support excluding categories server-side, and OSM's ambiguous `food_court` tag was dropped
+entirely. On top of the source-level filters, a name-keyword blocklist (Costco, Sam's Club,
+Walmart, major grocery chains — see `EXCLUDED_NAME_KEYWORDS` in `server/app.py`) is applied at
+read time as a universal safety net, so it also cleans up rows already cached from before these
+filters existed.
 
 **There is no "every restaurant in America" dataset either** — that isn't free, and isn't legal to
 bulk-store from Google Places or Yelp without a paid contract. Instead it asks the browser for the

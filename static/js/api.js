@@ -148,17 +148,21 @@ function cuisineIcon(cuisine) {
   return CUISINE_ICONS[key] || "🍽️";
 }
 
-// Cascading image sources for a nearby card, best first. The company logo
-// leads: Google's favicon lookup at a real size (128px, not the 64px we
-// used before) reliably returns the actual brand mark for known chains —
-// crisp, not the blurry stretched-up icon a smaller request produces —
-// which is what "look presentable with the company logo" means here. A
-// real photo (user's own post, or the source's photo via our proxy) is
-// the fallback for places without a discoverable website/logo, and the
-// cuisine icon is the last resort.
+// Cascading image sources for a nearby card, best first.
+//   1. The restaurant's actual logo, scraped server-side from its own
+//      website (GET /api/restaurants/:id/logo) — the real brand mark,
+//      not a favicon-service guess.
+//   2. Google's favicon lookup at a real size (128px, not the 64px used
+//      before) as a fallback when the site has no discoverable icon —
+//      still crisp for known chains, just not guaranteed to be the exact
+//      logo.
+//   3. A real photo (user's own post, or the source's photo via our
+//      proxy) for places without a discoverable website/logo at all.
+//   4. The cuisine icon, last resort.
 function nearbyImageCandidates(r) {
   const candidates = [];
   if (r.website_domain) {
+    candidates.push({ cls: "logo", src: `/api/restaurants/${r.id}/logo` });
     candidates.push({
       cls: "logo",
       src: `https://www.google.com/s2/favicons?domain=${encodeURIComponent(r.website_domain)}&sz=128`,

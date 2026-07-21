@@ -40,13 +40,16 @@ REQUEST_TIMEOUT = 15  # a single query over a ~16km bbox takes longer than a
 # aren't only amenity=restaurant — bars/pubs that serve food, bakeries,
 # delis, and ice cream shops are commonly tagged under `shop` instead of
 # `amenity`, and were missing places from results entirely.
-AMENITY_TAGS = ("restaurant", "cafe", "fast_food", "bar", "pub", "ice_cream", "food_court", "biergarten")
+# amenity=food_court is ambiguous — it's just as often a mall or big-box
+# store's shared food court (Costco, Sam's Club) as an actual dining
+# destination, so it's deliberately not included here.
+AMENITY_TAGS = ("restaurant", "cafe", "fast_food", "bar", "pub", "ice_cream", "biergarten")
 SHOP_TAGS = ("bakery", "deli", "confectionery")
 
 # Bump this whenever AMENITY_TAGS/SHOP_TAGS change so previously-cached
 # areas re-fetch with the new query instead of serving a stale, narrower
 # result set for up to CACHE_TTL_DAYS.
-QUERY_VERSION = 2
+QUERY_VERSION = 3
 
 
 class OsmError(Exception):

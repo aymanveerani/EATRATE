@@ -39,7 +39,7 @@ MAX_RADIUS_METERS = 50000  # Google's hard limit
 REQUEST_TIMEOUT = 10
 CACHE_TTL_DAYS = 7
 CACHE_SNAP_DEGREES = 0.03  # ~3.3km — see server/osm.py for why this exists
-QUERY_VERSION = 3  # bumped: now also fetches places.websiteUri
+QUERY_VERSION = 4  # bumped: now excludes grocery/warehouse-store types
 
 FIELD_MASK = (
     "places.id,places.displayName,places.location,places.formattedAddress,"
@@ -61,6 +61,18 @@ def _fetch_from_google(lat, lng, radius_m):
     body = json.dumps(
         {
             "includedTypes": ["restaurant"],
+            # Google's types are multi-valued, so a grocery store or
+            # warehouse club with a food counter can still carry
+            # "restaurant" as a secondary type and slip through the
+            # includedTypes filter above — exclude those explicitly.
+            "excludedTypes": [
+                "grocery_store",
+                "supermarket",
+                "warehouse_store",
+                "convenience_store",
+                "department_store",
+                "discount_store",
+            ],
             "maxResultCount": MAX_RESULTS,
             "locationRestriction": {
                 "circle": {
