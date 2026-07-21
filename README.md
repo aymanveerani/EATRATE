@@ -90,23 +90,30 @@ widget bolted onto a review app.
 
 **There is no "every restaurant in America" dataset either** — that isn't free, and isn't legal to
 bulk-store from Google Places or Yelp without a paid contract. Instead it asks the browser for the
-user's location and fetches real restaurants within a 5-mile radius from **OpenStreetMap's
-Overpass API** (free, keyless):
+user's location and fetches real restaurants within a 5-mile radius, live, on each request that
+needs fresh data.
 
-- [server/osm.py](server/osm.py) fetches a coarse grid of ~2×2km cells covering that radius,
-  caching each cell in `map_cache` for 7 days so repeated visits from the same area don't re-hit
-  Overpass. Every fetched place becomes a real row in `restaurants` (matched on OSM's node id via
-  a unique index, so re-fetching never duplicates it) — it's the same restaurant entity users can
-  post about and businesses can claim, not a separate read-only layer.
-- Overpass is a shared free public service with variable load — occasional slow or failed cells
-  are expected, not a bug. Failed cells are simply left uncached and retried on the next request;
-  a single request is bounded to a handful of live Overpass calls (`MAX_NEW_FETCHES_PER_REQUEST`
-  in `server/osm.py`) so one dense area can't hang the page — it self-heals by filling in
-  progressively over a few page loads instead.
-- Coverage reflects OpenStreetMap's crowd-sourced data: good to very good in cities, sparser in
-  small towns and rural areas. That's the real tradeoff of "free and keyless" vs. a paid provider.
-- If the user declines location access, the section shows an "Enable location" prompt instead of
-  guessing a location — there's no fallback to some other city.
+There are two data sources, tried in order:
+
+- **[server/yelp.py](server/yelp.py) — primary, if `YELP_API_KEY` is set.** Yelp Fusion's free
+  tier (no billing required, just a developer account) has restaurant-specific data: real names,
+  categories, and actual business photos — the biggest single upgrade over OSM. Get a key at
+  https://www.yelp.com/developers/v3/manage_app, then set `YELP_API_KEY` (see table below).
+- **[server/osm.py](server/osm.py) — fallback, always available.** OpenStreetMap's Overpass API
+  needs no key or account at all, so it's what runs if Yelp isn't configured, or if a Yelp call
+  fails for any reason (bad key, rate limit, network issue) — the nearby endpoint never just
+  errors out because of one source being down. Coverage reflects OSM's crowd-sourced data: good in
+  cities, sparser in small towns — the real tradeoff of "free and keyless."
+
+Both sources cache their results in `map_cache`, keyed by a coarse rounding of the search location
+(shared table, distinct key prefixes so the two never collide), for 7 days — repeat visits from the
+same area reuse the cached fetch instead of re-hitting either API. Every fetched place becomes a
+real row in `restaurants` (deduped on Yelp's business id or OSM's node id via a unique index) — the
+same restaurant entity users can post about and businesses can claim, not a separate read-only
+layer.
+
+If the user declines location access, the section shows an "Enable location" prompt instead of
+guessing a location — there's no fallback to some other city.
 
 ## Business claiming, soft launch, and AI insights
 
@@ -184,11 +191,16 @@ until you set them):
 | `ADMIN_SECRET` | Unlocks `/admin.html` and the `/api/admin/*` endpoints | Admin panel returns `503`, refuses all access |
 | `REDEMPTION_ENABLED` | Turns gift card redemption back on | Redemption returns `403` |
 | `ANTHROPIC_API_KEY` | Real AI-generated business insights | Falls back to a heuristic summary |
+| `YELP_API_KEY` | Restaurant data + real photos from Yelp for "nearby" search | Falls back to OpenStreetMap (still works, just sparser data, no real photos) |
 | `REPORT_EMAIL_TO` | Where report notifications get sent | — |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASSWORD` | Credentials for sending that email | Reports are logged to stdout instead of emailed (still saved in the DB either way) |
 
 Set `ADMIN_SECRET` to something long and random — treat it like a password, don't commit it. On
 Railway: service → Variables → add it there. Locally: `ADMIN_SECRET=... python3 run.py`.
+
+To get `YELP_API_KEY`: sign up at https://www.yelp.com/developers, create an app under "Manage
+App" (https://www.yelp.com/developers/v3/manage_app), and copy the API Key it gives you — no
+billing information required for the free tier. Set it the same way as `ADMIN_SECRET` above.
 
 ## Gift cards: simulated by default
 

@@ -18,6 +18,8 @@ from server.db import get_connection, init_db, UPLOADS_DIR
 from server.giftcards import issue_gift_card
 from server.notify import notify_report
 from server.osm import OsmError, sync_bbox
+from server.yelp import YelpError
+from server.yelp import sync_nearby as yelp_sync_nearby
 from server.photos import PhotoError, save_photo
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
@@ -309,10 +311,17 @@ def nearby_restaurants(ctx):
 
     conn = get_connection()
     try:
-        rows = sync_bbox(conn, lat - lat_delta, lng - lng_delta, lat + lat_delta, lng + lng_delta)
-    except OsmError as e:
-        conn.close()
-        raise ApiError(400, str(e))
+        # Yelp has more complete, restaurant-specific data (including real
+        # business photos) than OSM, so prefer it when a key is configured;
+        # fall back to OSM (no key/account needed) if it's not set up or a
+        # call fails.
+        rows = yelp_sync_nearby(conn, lat, lng, NEARBY_RADIUS_KM)
+    except YelpError:
+        try:
+            rows = sync_bbox(conn, lat - lat_delta, lng - lng_delta, lat + lat_delta, lng + lng_delta)
+        except OsmError as e:
+            conn.close()
+            raise ApiError(400, str(e))
 
     rows = list(rows)
     random.shuffle(rows)
