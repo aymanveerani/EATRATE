@@ -9,19 +9,24 @@ Tried first when GOOGLE_PLACES_API_KEY is set, falling back to Yelp
 configured or a call fails — the app works with any subset of these three
 turned on.
 
-Google's Places photo media endpoint requires the API key as a request
-credential to actually fetch an image, so we never build a client-facing
-URL straight to Google for it — that would leak the secret key to every
-visitor's browser. Instead we store just the photo's resource name here,
-and GET /api/restaurants/:id/photo (server/app.py) fetches the actual
-image bytes server-side (via fetch_photo_bytes below) and serves them from
-our own domain, caching the result to disk so it's a one-time cost per
-restaurant rather than a live Google call on every page view.
+The nearby-cards UI shows a company logo as the primary image (built
+client-side from website_domain, captured here from places.websiteUri —
+see static/js/api.js), with a real photo as fallback for places that have
+one but no discoverable website. Google's Places photo media endpoint
+requires the API key as a request credential to actually fetch an image,
+so we never build a client-facing URL straight to Google for it — that
+would leak the secret key to every visitor's browser. Instead we store
+just the photo's resource name here, and GET /api/restaurants/:id/photo
+(server/app.py) fetches the actual image bytes server-side (via
+fetch_photo_bytes below) and serves them from our own domain, caching the
+result to disk so it's a one-time cost per restaurant rather than a live
+Google call on every page view.
 """
 
 import json
 import math
 import os
+import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
 
@@ -34,11 +39,11 @@ MAX_RADIUS_METERS = 50000  # Google's hard limit
 REQUEST_TIMEOUT = 10
 CACHE_TTL_DAYS = 7
 CACHE_SNAP_DEGREES = 0.03  # ~3.3km — see server/osm.py for why this exists
-QUERY_VERSION = 2  # bumped: now also fetches places.photos
+QUERY_VERSION = 3  # bumped: now also fetches places.websiteUri
 
 FIELD_MASK = (
     "places.id,places.displayName,places.location,places.formattedAddress,"
-    "places.primaryTypeDisplayName,places.photos"
+    "places.primaryTypeDisplayName,places.photos,places.websiteUri"
 )
 
 
@@ -96,6 +101,16 @@ def _fetch_from_google(lat, lng, radius_m):
         # resource token, not display text, and truncating it corrupts it
         # into an invalid reference rather than a shorter-but-valid one.
         photo_name = (photos[0].get("name") or "") if photos else ""
+
+        website = p.get("websiteUri") or ""
+        domain = ""
+        if website:
+            parsed = urllib.parse.urlparse(website if "//" in website else f"//{website}")
+            domain = (parsed.netloc or parsed.path).split("/")[0]
+            if domain.startswith("www."):
+                domain = domain[4:]
+            domain = domain[:200]
+
         places.append(
             {
                 "google_place_id": p["id"],
@@ -105,6 +120,7 @@ def _fetch_from_google(lat, lng, radius_m):
                 "lat": loc["latitude"],
                 "lng": loc["longitude"],
                 "photo_name": photo_name,
+                "website_domain": domain,
             }
         )
     return places
@@ -157,12 +173,13 @@ def sync_nearby(conn, lat, lng, radius_km):
         places = _fetch_from_google(lat, lng, radius_km * 1000)
         for place in places:
             conn.execute(
-                "INSERT INTO restaurants (name, cuisine, address, lat, lng, google_place_id, source, google_photo_name) "
-                "VALUES (?, ?, ?, ?, ?, ?, 'google', ?) "
+                "INSERT INTO restaurants (name, cuisine, address, lat, lng, google_place_id, source, google_photo_name, website_domain) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'google', ?, ?) "
                 "ON CONFLICT(google_place_id) WHERE google_place_id IS NOT NULL DO UPDATE SET "
                 "name = excluded.name, cuisine = excluded.cuisine, address = excluded.address, "
                 "lat = excluded.lat, lng = excluded.lng, "
-                "google_photo_name = CASE WHEN excluded.google_photo_name != '' THEN excluded.google_photo_name ELSE restaurants.google_photo_name END",
+                "google_photo_name = CASE WHEN excluded.google_photo_name != '' THEN excluded.google_photo_name ELSE restaurants.google_photo_name END, "
+                "website_domain = CASE WHEN excluded.website_domain != '' THEN excluded.website_domain ELSE restaurants.website_domain END",
                 (
                     place["name"],
                     place["cuisine"],
@@ -171,6 +188,7 @@ def sync_nearby(conn, lat, lng, radius_km):
                     place["lng"],
                     place["google_place_id"],
                     place["photo_name"],
+                    place["website_domain"],
                 ),
             )
         conn.execute(

@@ -23,11 +23,12 @@
         </div>
       </a>
 
-      <div class="nearby-section-head">
-        <h2>Restaurants near you</h2>
-        <span class="sub">Tap to see reviews</span>
+      <div id="popular-section" style="display:none;">
+        <div class="nearby-section-head">
+          <h2>Most popular near you</h2>
+        </div>
+        <div id="popular-content" class="loading">Finding popular spots…</div>
       </div>
-      <div id="nearby-content" class="loading">Finding restaurants near you…</div>
 
       <div id="ftc-banner-slot"></div>
 
@@ -35,6 +36,12 @@
         <h2>What people are posting nearby</h2>
       </div>
       <div id="feed" class="loading">Loading feed…</div>
+
+      <div class="nearby-section-head">
+        <h2>Restaurants near you</h2>
+        <span class="sub">Tap to see reviews</span>
+      </div>
+      <div id="nearby-content" class="loading">Finding restaurants near you…</div>
     </main>
     <div id="tabbar-slot"></div>
   </div>
@@ -88,6 +95,25 @@
       }
     }
 
+    async function loadPopular(pos) {
+      const section = document.getElementById("popular-section");
+      const content = document.getElementById("popular-content");
+      try {
+        const { restaurants } = await api.get(
+          `/api/restaurants/popular?lat=${pos.coords.latitude}&lng=${pos.coords.longitude}`
+        );
+        if (restaurants.length === 0) {
+          section.style.display = "none";
+          return;
+        }
+        section.style.display = "";
+        content.className = "nearby-scroll";
+        content.innerHTML = restaurants.map(renderNearbyCard).join("");
+      } catch (err) {
+        section.style.display = "none";
+      }
+    }
+
     function renderFeedFallback() {
       const feed = document.getElementById("feed");
       if (lastNearbyRestaurants.length === 0) {
@@ -127,9 +153,14 @@
       document.getElementById("nearby-content").textContent = "Finding restaurants near you…";
       document.getElementById("feed").className = "loading";
       document.getElementById("feed").textContent = "Loading feed…";
+      document.getElementById("popular-section").style.display = "none";
       try {
         const pos = await getPosition();
-        await Promise.all([loadNearby(pos), loadFeed(pos)]);
+        // loadNearby first: it populates lastNearbyRestaurants, which
+        // loadFeed's empty-state fallback reads — running it after would
+        // show that fallback with no restaurants yet on a fast response.
+        await loadNearby(pos);
+        await Promise.all([loadFeed(pos), loadPopular(pos)]);
       } catch (err) {
         renderLocatePrompt();
       }

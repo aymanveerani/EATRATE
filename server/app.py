@@ -396,39 +396,43 @@ def _dedupe_and_sort_by_distance(rows, lat, lng):
     return [entry[1] for entry in kept]
 
 
-@route("GET", r"/api/restaurants/nearby")
-def nearby_restaurants(ctx):
-    ctx.require_user()
+POPULAR_RESULT_CAP = 3
+
+
+def _parse_lat_lng(ctx):
     q = parse_qs(ctx.parsed_url.query)
     try:
-        lat = float(q["lat"][0])
-        lng = float(q["lng"][0])
+        return float(q["lat"][0]), float(q["lng"][0])
     except (KeyError, ValueError, IndexError):
         raise ApiError(400, "lat and lng query params are required.")
 
+
+def _fetch_nearby_rows(conn, lat, lng):
+    """Runs the Google -> Yelp -> OSM fallback chain (see server/app.py
+    module docs) and returns raw restaurant rows within NEARBY_RADIUS_KM.
+    Shared by the nearby and popular endpoints so both benefit from
+    whichever source is actually configured, without duplicating the
+    chain."""
+    try:
+        return google_sync_nearby(conn, lat, lng, NEARBY_RADIUS_KM)
+    except GooglePlacesError:
+        pass
+    try:
+        return yelp_sync_nearby(conn, lat, lng, NEARBY_RADIUS_KM)
+    except YelpError:
+        pass
     lat_delta = NEARBY_RADIUS_KM / 111.0
     lng_delta = NEARBY_RADIUS_KM / (111.0 * max(math.cos(math.radians(lat)), 0.01))
-
-    conn = get_connection()
     try:
-        # Google has the most complete US restaurant listings, so prefer it
-        # when a key is configured; fall back through Yelp (also needs a
-        # key, but no billing) and finally OSM (no key/account needed at
-        # all) so the feature keeps working with any subset configured.
-        rows = google_sync_nearby(conn, lat, lng, NEARBY_RADIUS_KM)
-    except GooglePlacesError:
-        try:
-            rows = yelp_sync_nearby(conn, lat, lng, NEARBY_RADIUS_KM)
-        except YelpError:
-            try:
-                rows = sync_bbox(conn, lat - lat_delta, lng - lng_delta, lat + lat_delta, lng + lng_delta)
-            except OsmError as e:
-                conn.close()
-                raise ApiError(400, str(e))
+        return sync_bbox(conn, lat - lat_delta, lng - lng_delta, lat + lat_delta, lng + lng_delta)
+    except OsmError as e:
+        raise ApiError(400, str(e))
 
-    rows = _dedupe_and_sort_by_distance(list(rows), lat, lng)
-    rows = rows[:NEARBY_RESULT_CAP]
 
+def _serialize_with_stats(conn, rows):
+    """Attaches post_count/avg_rating and each restaurant's most recent
+    user-submitted photo (used as a fallback image client-side, behind the
+    company logo — see nearbyImageCandidates in static/js/api.js)."""
     restaurant_ids = [r["id"] for r in rows]
     stats = {}
     recent_photo = {}
@@ -440,15 +444,12 @@ def nearby_restaurants(ctx):
             restaurant_ids,
         ):
             stats[r["restaurant_id"]] = {"post_count": r["post_count"], "avg_rating": round(r["avg_rating"], 1)}
-        # A real user-submitted photo of the place beats any stock/logo
-        # image — use the most recent one per restaurant, if any exist yet.
         for r in conn.execute(
             f"SELECT restaurant_id, photo_path FROM posts "
             f"WHERE restaurant_id IN ({placeholders}) ORDER BY created_at DESC",
             restaurant_ids,
         ):
             recent_photo.setdefault(r["restaurant_id"], r["photo_path"])
-    conn.close()
 
     out = []
     for r in rows:
@@ -459,6 +460,41 @@ def nearby_restaurants(ctx):
         photo_path = recent_photo.get(r["id"])
         item["photo_url"] = "/" + photo_path if photo_path else None
         out.append(item)
+    return out
+
+
+@route("GET", r"/api/restaurants/nearby")
+def nearby_restaurants(ctx):
+    ctx.require_user()
+    lat, lng = _parse_lat_lng(ctx)
+    conn = get_connection()
+    try:
+        rows = _fetch_nearby_rows(conn, lat, lng)
+        rows = _dedupe_and_sort_by_distance(list(rows), lat, lng)
+        rows = rows[:NEARBY_RESULT_CAP]
+        out = _serialize_with_stats(conn, rows)
+    finally:
+        conn.close()
+    ctx.send_json(HTTPStatus.OK, {"restaurants": out})
+
+
+@route("GET", r"/api/restaurants/popular")
+def popular_restaurants(ctx):
+    """The top POPULAR_RESULT_CAP nearby restaurants by EatRate activity
+    (most posts, ties broken by rating) — a different ranking of the same
+    underlying area data as /nearby, not a separate search."""
+    ctx.require_user()
+    lat, lng = _parse_lat_lng(ctx)
+    conn = get_connection()
+    try:
+        rows = _fetch_nearby_rows(conn, lat, lng)
+        deduped = _dedupe_and_sort_by_distance(list(rows), lat, lng)
+        out = _serialize_with_stats(conn, deduped)
+    finally:
+        conn.close()
+    out = [r for r in out if r["post_count"] > 0]
+    out.sort(key=lambda r: (-r["post_count"], -r["avg_rating"]))
+    out = out[:POPULAR_RESULT_CAP]
     ctx.send_json(HTTPStatus.OK, {"restaurants": out})
 
 

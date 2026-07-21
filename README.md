@@ -81,12 +81,22 @@ registrar; DNS propagation usually takes a few minutes to a few hours.
 - The reward amount ($10) and the trigger count (5) are constants in
   [server/app.py](server/app.py) (`REWARD_EVERY_N_POSTS`, `REWARD_AMOUNT_CENTS`).
 
-## Restaurants near you (feed, not a separate map)
+## The feed (index.html): popular, then posts, then nearby
 
 There's no standalone map page — an earlier version had one (an interactive Leaflet map), but it
-was replaced with a horizontally-scrolling "Restaurants near you" section built directly into the
-feed (`index.html`), which is both simpler and looks a lot more like a native app than a map
-widget bolted onto a review app.
+was replaced with restaurant sections built directly into the feed. Top to bottom: the capture
+CTA, **"Most popular near you"** (top 3 nearby restaurants ranked by post count, ties broken by
+rating — hidden entirely if none of the nearby restaurants have any posts yet), **"What people are
+posting nearby"** (the actual review feed), then **"Restaurants near you"** (up to 10, nearest
+first) at the bottom for browsing everything in range. Popular and nearby both render the same
+card component and hit the same underlying per-area restaurant data — popular is just a different
+ranking of it (`GET /api/restaurants/popular` vs. `GET /api/restaurants/nearby`, sharing
+`_fetch_nearby_rows`/`_serialize_with_stats` in `server/app.py`).
+
+Nearby-card images are a company logo first (Google's favicon lookup on the restaurant's website,
+at a real size — 128px, not a stretched-up 64px — so it's the actual brand mark, not a blurry
+icon), falling back to a real photo (a user's own review photo, or the source's photo) only for
+places with no discoverable logo, and a cuisine icon as the last resort.
 
 **There is no "every restaurant in America" dataset either** — that isn't free, and isn't legal to
 bulk-store from Google Places or Yelp without a paid contract. Instead it asks the browser for the
@@ -313,13 +323,15 @@ project root locally, a mounted volume in production — and are gitignored.)
 | GET    | `/api/me`                         | ✓    | |
 | GET    | `/api/restaurants`                | –    | list with avg rating + post count |
 | GET    | `/api/restaurants/:id`            | ✓    | detail + all posts (photo grid) + claim/soft-launch-partner status |
-| GET    | `/api/restaurants/nearby`         | ✓    | `?lat&lng` — real restaurants within 5 miles, randomized order, live OSM-backed |
+| GET    | `/api/restaurants/nearby`         | ✓    | `?lat&lng` — real restaurants within 5 miles, nearest first, deduped across sources (Google/Yelp/OSM) |
+| GET    | `/api/restaurants/popular`        | ✓    | `?lat&lng` — top 3 nearby restaurants by post count (ties by rating); same area data as `/nearby`, different ranking |
+| GET    | `/api/restaurants/:id/photo`      | ✓    | Proxies a restaurant's Google Places photo server-side (API key never reaches the client); disk-cached after first fetch |
 | POST   | `/api/restaurants/:id/claim`      | ✓    | `{business_name, contact_email}` — 403 unless the restaurant is a soft-launch partner, 409 if already claimed |
 | GET    | `/api/business/dashboard`         | ✓    | stats + weekly trend + AI insights + trial status + photos for every restaurant you've claimed |
 | POST   | `/api/posts`                      | ✓    | `{photo: data-url, restaurant_name, rating: 0-10, caption?}` — restaurant is found-or-created by name; `429` if rate-limited |
 | POST   | `/api/posts/:id/cheer`            | ✓    | toggles a cheer; 403 if you're not the author or their friend |
 | POST   | `/api/posts/:id/report`           | ✓    | `{reason?}` — flags a post, notifies the operator |
-| GET    | `/api/feed`                       | ✓    | posts from you + your friends, newest first |
+| GET    | `/api/feed`                       | ✓    | `?lat&lng` — posts from anyone at restaurants within 5 miles, newest first; falls back to friends-only if no location |
 | GET    | `/api/friends`                    | ✓    | |
 | POST   | `/api/friends`                    | ✓    | `{email}` — adds bidirectionally |
 | DELETE | `/api/friends/:id`                | ✓    | removes both directions |

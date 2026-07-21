@@ -148,27 +148,52 @@ function cuisineIcon(cuisine) {
   return CUISINE_ICONS[key] || "🍽️";
 }
 
-function nearbyFallbackHtml(r) {
-  return `<span class="nearby-photo-fallback">${cuisineIcon(r.cuisine)}</span>`;
+// Cascading image sources for a nearby card, best first. The company logo
+// leads: Google's favicon lookup at a real size (128px, not the 64px we
+// used before) reliably returns the actual brand mark for known chains —
+// crisp, not the blurry stretched-up icon a smaller request produces —
+// which is what "look presentable with the company logo" means here. A
+// real photo (user's own post, or the source's photo via our proxy) is
+// the fallback for places without a discoverable website/logo, and the
+// cuisine icon is the last resort.
+function nearbyImageCandidates(r) {
+  const candidates = [];
+  if (r.website_domain) {
+    candidates.push({
+      cls: "logo",
+      src: `https://www.google.com/s2/favicons?domain=${encodeURIComponent(r.website_domain)}&sz=128`,
+    });
+  }
+  if (r.photo_url) candidates.push({ cls: "photo", src: r.photo_url });
+  if (r.osm_image) candidates.push({ cls: "photo", src: r.osm_image });
+  return candidates;
+}
+
+function nearbyPhotoError(img) {
+  const candidates = JSON.parse(decodeURIComponent(img.dataset.candidates || "[]"));
+  const idx = parseInt(img.dataset.idx || "0", 10) + 1;
+  if (idx < candidates.length) {
+    img.dataset.idx = idx;
+    img.className = candidates[idx].cls;
+    img.src = candidates[idx].src;
+  } else {
+    img.replaceWith(
+      Object.assign(document.createElement("span"), {
+        className: "nearby-photo-fallback",
+        textContent: img.dataset.cuisineIcon,
+      })
+    );
+  }
 }
 
 function renderNearbyPhoto(r) {
-  const fallback = nearbyFallbackHtml(r);
-  const onerror = `this.replaceWith(Object.assign(document.createElement('span'), {className:'nearby-photo-fallback', textContent:'${cuisineIcon(r.cuisine)}'}));`;
-
-  // Prefer a real photo of the actual place: a user's own review photo
-  // first (most authentic and most likely to exist), then a source photo
-  // (Google via our server-side proxy, or an OSM one) if the place has
-  // one. No favicon fallback — those are tiny (16-32px) source images
-  // stretched to display size, which just looks blurry; a clean cuisine
-  // icon reads better than a blurry logo.
-  if (r.photo_url) {
-    return `<img class="photo" src="${r.photo_url}" loading="lazy" onerror="${onerror}" />`;
+  const icon = cuisineIcon(r.cuisine);
+  const candidates = nearbyImageCandidates(r);
+  if (candidates.length === 0) {
+    return `<span class="nearby-photo-fallback">${icon}</span>`;
   }
-  if (r.osm_image) {
-    return `<img class="photo" src="${r.osm_image}" loading="lazy" onerror="${onerror}" />`;
-  }
-  return fallback;
+  const encodedCandidates = encodeURIComponent(JSON.stringify(candidates));
+  return `<img class="${candidates[0].cls}" src="${candidates[0].src}" data-candidates="${encodedCandidates}" data-idx="0" data-cuisine-icon="${escapeHtml(icon)}" loading="lazy" onerror="nearbyPhotoError(this)" />`;
 }
 
 function renderNearbyCard(r) {
