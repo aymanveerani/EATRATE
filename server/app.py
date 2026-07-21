@@ -3,7 +3,6 @@ import json
 import math
 import mimetypes
 import os
-import random
 import re
 import socketserver
 from datetime import datetime
@@ -348,6 +347,54 @@ NEARBY_RESULT_CAP = 10  # shown as a vertical list now, not a horizontal
 # scroll — 18 made sense off-screen, 10 keeps the feed from being pushed
 # too far down before you reach friends' posts
 
+# Same physical restaurant fetched by two different sources (e.g. cached
+# via OSM in an earlier session, now also returned by Google) ends up as
+# two separate rows — there's no cross-source unique constraint, only a
+# per-source one (osm_id/yelp_id/google_place_id). Left alone, that surfaces
+# a stale, lower-quality duplicate (no photo, or a blurry favicon) right
+# next to the good one for the same place. Dedup by normalized name +
+# proximity and keep whichever source ranks best.
+DEDUP_RADIUS_KM = 0.12  # ~2 city blocks — same building, not just "close"
+SOURCE_PRIORITY = {"google": 0, "yelp": 1, "osm": 2, "user": 3}
+
+
+def _haversine_km(lat1, lng1, lat2, lng2):
+    r = 6371.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lng2 - lng1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def _normalize_name(name):
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+def _dedupe_and_sort_by_distance(rows, lat, lng):
+    """Sorts by real distance from (lat, lng) — replaces the old
+    random.shuffle, which is why "nearest to you" wasn't actually nearest —
+    and collapses same-place duplicates across sources, preferring the
+    highest-priority source's row (see SOURCE_PRIORITY)."""
+    scored = [(_haversine_km(lat, lng, r["lat"], r["lng"]), r) for r in rows]
+    scored.sort(key=lambda t: t[0])
+
+    kept = []  # list of [distance, row, normalized_name]
+    for dist, row in scored:
+        norm = _normalize_name(row["name"])
+        match = None
+        for entry in kept:
+            if entry[2] == norm and _haversine_km(row["lat"], row["lng"], entry[1]["lat"], entry[1]["lng"]) < DEDUP_RADIUS_KM:
+                match = entry
+                break
+        if match is None:
+            kept.append([dist, row, norm])
+        elif SOURCE_PRIORITY.get(row["source"], 99) < SOURCE_PRIORITY.get(match[1]["source"], 99):
+            match[0], match[1] = dist, row
+
+    kept.sort(key=lambda entry: entry[0])
+    return [entry[1] for entry in kept]
+
 
 @route("GET", r"/api/restaurants/nearby")
 def nearby_restaurants(ctx):
@@ -379,8 +426,7 @@ def nearby_restaurants(ctx):
                 conn.close()
                 raise ApiError(400, str(e))
 
-    rows = list(rows)
-    random.shuffle(rows)
+    rows = _dedupe_and_sort_by_distance(list(rows), lat, lng)
     rows = rows[:NEARBY_RESULT_CAP]
 
     restaurant_ids = [r["id"] for r in rows]

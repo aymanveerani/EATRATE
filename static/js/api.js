@@ -157,17 +157,16 @@ function renderNearbyPhoto(r) {
   const onerror = `this.replaceWith(Object.assign(document.createElement('span'), {className:'nearby-photo-fallback', textContent:'${cuisineIcon(r.cuisine)}'}));`;
 
   // Prefer a real photo of the actual place: a user's own review photo
-  // first (most authentic and most likely to exist), then an OSM-sourced
-  // photo if the place has one, then a favicon logo, then a cuisine icon.
+  // first (most authentic and most likely to exist), then a source photo
+  // (Google via our server-side proxy, or an OSM one) if the place has
+  // one. No favicon fallback — those are tiny (16-32px) source images
+  // stretched to display size, which just looks blurry; a clean cuisine
+  // icon reads better than a blurry logo.
   if (r.photo_url) {
     return `<img class="photo" src="${r.photo_url}" loading="lazy" onerror="${onerror}" />`;
   }
   if (r.osm_image) {
     return `<img class="photo" src="${r.osm_image}" loading="lazy" onerror="${onerror}" />`;
-  }
-  if (r.website_domain) {
-    const faviconUrl = `https://www.google.com/s2/favicons?domain=${encodeURIComponent(r.website_domain)}&sz=64`;
-    return `<img class="favicon" src="${faviconUrl}" loading="lazy" onerror="${onerror}" />`;
   }
   return fallback;
 }

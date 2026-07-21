@@ -563,14 +563,6 @@ nav.tabbar .icon { font-size: 20px; }
   object-fit: cover;
 }
 
-.nearby-card .nearby-photo img.favicon {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  padding: 12px;
-  background: white;
-}
-
 .nearby-card .nearby-photo .nearby-photo-fallback { line-height: 1; }
 
 .nearby-card .nearby-chevron {
