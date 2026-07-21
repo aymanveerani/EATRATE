@@ -35,7 +35,18 @@ MAX_BBOX_DEGREES = 0.5  # ~55km — sanity cap against absurdly large requests
 REQUEST_TIMEOUT = 15  # a single query over a ~16km bbox takes longer than a
 # small tile did; Overpass is a shared free public instance, so fail fast
 # and let the next request retry rather than hang the page indefinitely
-AMENITIES = ("restaurant", "cafe", "fast_food")
+
+# OSM tags a real place-you'd-eat-at can carry a place under. Restaurants
+# aren't only amenity=restaurant — bars/pubs that serve food, bakeries,
+# delis, and ice cream shops are commonly tagged under `shop` instead of
+# `amenity`, and were missing places from results entirely.
+AMENITY_TAGS = ("restaurant", "cafe", "fast_food", "bar", "pub", "ice_cream", "food_court", "biergarten")
+SHOP_TAGS = ("bakery", "deli", "confectionery")
+
+# Bump this whenever AMENITY_TAGS/SHOP_TAGS change so previously-cached
+# areas re-fetch with the new query instead of serving a stale, narrower
+# result set for up to CACHE_TTL_DAYS.
+QUERY_VERSION = 2
 
 
 class OsmError(Exception):
@@ -43,12 +54,14 @@ class OsmError(Exception):
 
 
 def _snap_key(lat, lng):
-    return f"{round(lat / CACHE_SNAP_DEGREES)}:{round(lng / CACHE_SNAP_DEGREES)}"
+    return f"{QUERY_VERSION}:{round(lat / CACHE_SNAP_DEGREES)}:{round(lng / CACHE_SNAP_DEGREES)}"
 
 
 def _fetch_bbox_from_overpass(min_lat, min_lng, max_lat, max_lng):
+    bbox = f"({min_lat},{min_lng},{max_lat},{max_lng})"
     clauses = "\n".join(
-        f'  node["amenity"="{a}"]({min_lat},{min_lng},{max_lat},{max_lng});' for a in AMENITIES
+        [f'  node["amenity"="{a}"]{bbox};' for a in AMENITY_TAGS]
+        + [f'  node["shop"="{s}"]{bbox};' for s in SHOP_TAGS]
     )
     query = f"[out:json][timeout:{REQUEST_TIMEOUT}];\n(\n{clauses}\n);\nout body {MAX_RESULTS};"
 
