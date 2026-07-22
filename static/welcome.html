@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>EatRate</title>
+  <link rel="stylesheet" href="/css/app.css" />
+</head>
+<body>
+  <div class="app">
+    <main style="display:flex; flex-direction:column; justify-content:center; min-height:calc(100vh - 32px);">
+      <div style="text-align:center; margin-bottom:8px;">
+        <div class="mark" style="width:72px; height:72px; font-size:34px; margin:0 auto 16px; display:flex; align-items:center; justify-content:center;">🍴</div>
+        <h1 style="font-size:28px; margin:0;">EatRate</h1>
+        <p style="color:var(--muted); margin:8px 0 32px;">Rate every bite. Share with friends.<br/>Earn gift cards for the meals you're already having.</p>
+      </div>
+
+      <div class="card">
+        <div id="error" style="display:none;" class="error-msg"></div>
+        <form id="welcome-form">
+          <div>
+            <label for="email">Email</label>
+            <input type="email" id="email" required autocomplete="email" placeholder="you@rutgers.edu" />
+          </div>
+          <div>
+            <label for="phone">Phone number <span style="color:var(--muted); font-weight:400;">(optional)</span></label>
+            <input type="tel" id="phone" autocomplete="tel" placeholder="(555) 555-5555" />
+          </div>
+          <button type="submit" class="primary" id="submit-btn">Get started</button>
+        </form>
+        <div class="link-row">Already have an account? <a href="/login.html">Log in</a></div>
+      </div>
+    </main>
+  </div>
+  <script src="/js/api.js"></script>
+  <script>
+    (async () => {
+      try {
+        await api.get("/api/me");
+        window.location.href = "/index.html";
+      } catch (e) {}
+    })();
+
+    const form = document.getElementById("welcome-form");
+    const errorBox = document.getElementById("error");
+
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      errorBox.style.display = "none";
+      const email = document.getElementById("email").value.trim();
+      if (!email) {
+        errorBox.textContent = "Enter an email to continue.";
+        errorBox.style.display = "block";
+        return;
+      }
+      const phone = document.getElementById("phone").value.trim();
+      const params = new URLSearchParams({ email });
+      if (phone) params.set("phone", phone);
+      window.location.href = `/signup.html?${params.toString()}`;
+    });
+  </script>
+</body>
+</html>

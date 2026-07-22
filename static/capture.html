@@ -32,13 +32,23 @@
         </div>
 
         <div class="card">
+          <label style="display:block; margin-bottom:8px;">Where are you eating?</label>
+          <button type="button" class="restaurant-option" id="home-cooked-option">
+            <span class="restaurant-option-icon">🏠</span>
+            <span class="restaurant-option-name">Home Cooked</span>
+          </button>
+          <div id="nearby-picker-list" class="loading">Finding restaurants near you…</div>
+          <div style="text-align:center; margin-top:10px;">
+            <a href="#" id="manual-entry-link" style="color:var(--muted); font-size:13px; text-decoration:underline;">Can't find it? Enter it manually</a>
+          </div>
+          <div id="manual-entry-row" style="display:none; margin-top:10px;">
+            <input type="text" id="restaurant-manual" placeholder="e.g. Joe's Pizza" autocomplete="off" />
+          </div>
+        </div>
+
+        <div class="card">
           <div id="error" style="display:none;" class="error-msg"></div>
           <form id="post-form">
-            <div>
-              <label for="restaurant">Where are you eating?</label>
-              <input type="text" id="restaurant" list="restaurant-options" placeholder="e.g. Joe's Pizza" required autocomplete="off" />
-              <datalist id="restaurant-options"></datalist>
-            </div>
             <div class="star-rating">
               <input type="range" id="rating" min="0" max="10" step="1" value="8" />
               <span class="value" id="rating-value">8</span>
@@ -106,6 +116,82 @@
     const ratingValue = document.getElementById("rating-value");
     ratingInput.addEventListener("input", () => (ratingValue.textContent = ratingInput.value));
 
+    // Restaurant picker: pick from the nearby list, choose Home Cooked, or
+    // (if geolocation fails or the place just isn't listed) fall back to
+    // typing a name manually, same as the old free-text flow.
+    let selectedRestaurantId = null; // set when a nearby restaurant is picked
+    let isHomeCooked = false;
+    const nearbyPickerList = document.getElementById("nearby-picker-list");
+    const homeCookedOption = document.getElementById("home-cooked-option");
+    const manualEntryLink = document.getElementById("manual-entry-link");
+    const manualEntryRow = document.getElementById("manual-entry-row");
+    const manualInput = document.getElementById("restaurant-manual");
+
+    function clearSelection() {
+      selectedRestaurantId = null;
+      isHomeCooked = false;
+      homeCookedOption.classList.remove("selected");
+      nearbyPickerList.querySelectorAll(".restaurant-option.selected").forEach((el) => el.classList.remove("selected"));
+    }
+
+    homeCookedOption.addEventListener("click", () => {
+      clearSelection();
+      isHomeCooked = true;
+      homeCookedOption.classList.add("selected");
+      manualEntryRow.style.display = "none";
+      manualInput.value = "";
+    });
+
+    manualEntryLink.addEventListener("click", (e) => {
+      e.preventDefault();
+      clearSelection();
+      manualEntryRow.style.display = manualEntryRow.style.display === "none" ? "block" : "none";
+      if (manualEntryRow.style.display === "block") manualInput.focus();
+    });
+
+    async function loadNearbyPicker() {
+      try {
+        const pos = await new Promise((resolve, reject) => {
+          if (!navigator.geolocation) { reject(new Error("no geolocation")); return; }
+          navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 8000 });
+        });
+        const { restaurants } = await api.get(
+          `/api/restaurants/nearby?lat=${pos.coords.latitude}&lng=${pos.coords.longitude}`
+        );
+        if (restaurants.length === 0) {
+          nearbyPickerList.className = "empty-state";
+          nearbyPickerList.textContent = "No restaurants found nearby — enter one manually below.";
+          return;
+        }
+        nearbyPickerList.className = "";
+        nearbyPickerList.innerHTML = restaurants
+          .map(
+            (r) => `
+              <button type="button" class="restaurant-option" data-restaurant-id="${r.id}">
+                <span class="restaurant-option-icon">🍽️</span>
+                <span>
+                  <span class="restaurant-option-name">${escapeHtml(r.name)}</span>
+                  <div class="restaurant-option-meta">${escapeHtml(r.cuisine || "Restaurant")}</div>
+                </span>
+              </button>
+            `
+          )
+          .join("");
+        nearbyPickerList.querySelectorAll(".restaurant-option").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            clearSelection();
+            selectedRestaurantId = btn.dataset.restaurantId;
+            btn.classList.add("selected");
+            manualEntryRow.style.display = "none";
+            manualInput.value = "";
+          });
+        });
+      } catch (err) {
+        nearbyPickerList.className = "empty-state";
+        nearbyPickerList.textContent = "Enable location to see nearby restaurants, or enter one manually below.";
+      }
+    }
+
     const form = document.getElementById("post-form");
     const errorBox = document.getElementById("error");
     const submitBtn = document.getElementById("submit-btn");
@@ -113,15 +199,29 @@
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       errorBox.style.display = "none";
+
+      const manualName = manualInput.value.trim();
+      const body = {
+        photo: photoDataUrl,
+        rating: parseInt(ratingInput.value, 10),
+        caption: document.getElementById("caption").value,
+      };
+      if (isHomeCooked) {
+        body.restaurant_name = "Home Cooked";
+      } else if (selectedRestaurantId) {
+        body.restaurant_id = selectedRestaurantId;
+      } else if (manualName) {
+        body.restaurant_name = manualName;
+      } else {
+        errorBox.textContent = "Choose a restaurant, Home Cooked, or enter a place manually.";
+        errorBox.style.display = "block";
+        return;
+      }
+
       submitBtn.disabled = true;
       submitBtn.textContent = "Sharing…";
       try {
-        const result = await api.post("/api/posts", {
-          photo: photoDataUrl,
-          restaurant_name: document.getElementById("restaurant").value,
-          rating: parseInt(ratingInput.value, 10),
-          caption: document.getElementById("caption").value,
-        });
+        const result = await api.post("/api/posts", body);
         document.getElementById("success-sub").textContent = `Post #${result.post_count}`;
         if (result.reward_earned) {
           document.getElementById("reward-banner").style.display = "block";
@@ -144,15 +244,24 @@
       if (!user) return;
       document.getElementById("tabbar-slot").innerHTML = renderTabbar("");
 
-      const prefill = new URLSearchParams(window.location.search).get("restaurant");
-      if (prefill) document.getElementById("restaurant").value = prefill;
-
-      try {
-        const { restaurants } = await api.get("/api/restaurants");
-        document.getElementById("restaurant-options").innerHTML = restaurants
-          .map((r) => `<option value="${escapeHtml(r.name)}"></option>`)
-          .join("");
-      } catch (e) {}
+      // Arrived from a specific restaurant's "Share your visit" button —
+      // pre-select it directly rather than making the user find it again
+      // in the nearby list.
+      const params = new URLSearchParams(window.location.search);
+      const prefillId = params.get("restaurant_id");
+      const prefillName = params.get("restaurant_name");
+      if (prefillId && prefillName) {
+        selectedRestaurantId = prefillId;
+        nearbyPickerList.className = "";
+        nearbyPickerList.innerHTML = `
+          <button type="button" class="restaurant-option selected" data-restaurant-id="${prefillId}">
+            <span class="restaurant-option-icon">🍽️</span>
+            <span class="restaurant-option-name">${escapeHtml(prefillName)}</span>
+          </button>
+        `;
+      } else {
+        loadNearbyPicker();
+      }
     })();
   </script>
 </body>

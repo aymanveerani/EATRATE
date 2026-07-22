@@ -58,10 +58,12 @@ def route(method, pattern):
 
 
 def public_user(row):
+    keys = row.keys()
     return {
         "id": row["id"],
         "email": row["email"],
         "name": row["name"],
+        "phone_number": row["phone_number"] if "phone_number" in keys else "",
         "post_count": row["post_count"],
     }
 
@@ -178,6 +180,7 @@ def signup(ctx):
     email = (body.get("email") or "").strip()
     name = (body.get("name") or "").strip()
     password = body.get("password") or ""
+    phone_number = (body.get("phone_number") or "").strip()[:20]
 
     if not email or "@" not in email:
         raise ApiError(400, "A valid email is required.")
@@ -192,7 +195,7 @@ def signup(ctx):
         conn.close()
         raise ApiError(409, "An account with that email already exists.")
 
-    user_id = auth.create_user(conn, email, name, password)
+    user_id = auth.create_user(conn, email, name, password, phone_number)
     token = auth.create_session(conn, user_id)
     user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     conn.close()
@@ -241,18 +244,21 @@ def me(ctx):
 
 @route("GET", r"/api/restaurants")
 def list_restaurants(ctx):
+    q = parse_qs(ctx.parsed_url.query)
+    only_partners = q.get("soft_launch_partner", [""])[0].lower() == "true"
+
     conn = get_connection()
-    rows = conn.execute(
-        """
+    query = """
         SELECT restaurants.*,
                COUNT(posts.id) AS post_count,
                COALESCE(AVG(posts.rating), 0) AS avg_rating
         FROM restaurants
         LEFT JOIN posts ON posts.restaurant_id = restaurants.id
+        {where}
         GROUP BY restaurants.id
         ORDER BY restaurants.name COLLATE NOCASE
-        """
-    ).fetchall()
+    """.format(where="WHERE restaurants.soft_launch_partner = 1" if only_partners else "")
+    rows = conn.execute(query).fetchall()
     conn.close()
     out = []
     for row in rows:
@@ -802,7 +808,24 @@ def create_post(ctx):
         conn.close()
         raise ApiError(429, "You can only share one post per day. Come back tomorrow!")
 
-    restaurant_id = find_or_create_restaurant(conn, body.get("restaurant_name"))
+    # Prefer an exact restaurant_id (picked from the nearby list or the
+    # Home Cooked option in capture.html) — no name-matching ambiguity.
+    # Falls back to the older find-or-create-by-name path for the manual
+    # "can't find it" text entry, which still needs to work when
+    # geolocation is unavailable or the nearby list doesn't have it.
+    raw_restaurant_id = body.get("restaurant_id")
+    if raw_restaurant_id:
+        try:
+            restaurant_id = int(raw_restaurant_id)
+        except (TypeError, ValueError):
+            conn.close()
+            raise ApiError(400, "Invalid restaurant_id.")
+        exists = conn.execute("SELECT 1 FROM restaurants WHERE id = ?", (restaurant_id,)).fetchone()
+        if not exists:
+            conn.close()
+            raise ApiError(404, "Restaurant not found.")
+    else:
+        restaurant_id = find_or_create_restaurant(conn, body.get("restaurant_name"))
 
     try:
         photo_path = save_photo(body.get("photo"))
@@ -890,6 +913,40 @@ def report_post(ctx, post_id):
 
     notify_report(post_id, user["email"], reason)
     ctx.send_json(HTTPStatus.CREATED, {"ok": True})
+
+
+@route("DELETE", r"/api/posts/(?P<post_id>\d+)")
+def delete_post(ctx, post_id):
+    user = ctx.require_user()
+    conn = get_connection()
+    post = conn.execute("SELECT * FROM posts WHERE id = ?", (post_id,)).fetchone()
+    if post is None:
+        conn.close()
+        raise ApiError(404, "Post not found.")
+    if post["user_id"] != user["id"]:
+        conn.close()
+        raise ApiError(403, "You can only delete your own posts.")
+
+    # cheers/reports reference posts.id via a foreign key with no ON DELETE
+    # CASCADE, so those rows must go first or the delete below would be
+    # blocked (foreign_keys=ON is enforced on every connection).
+    conn.execute("DELETE FROM cheers WHERE post_id = ?", (post_id,))
+    conn.execute("DELETE FROM reports WHERE post_id = ?", (post_id,))
+    conn.execute("DELETE FROM posts WHERE id = ?", (post_id,))
+    # Deliberately not decrementing users.post_count: it's a lifetime
+    # counter driving the "every 5th post" reward trigger, not a live post
+    # total. Decrementing it would let someone post to earn a reward, then
+    # delete-and-repost to walk the counter backward and re-trigger the
+    # same reward slot.
+    conn.commit()
+    conn.close()
+
+    try:
+        os.remove(os.path.join(UPLOADS_DIR, os.path.basename(post["photo_path"])))
+    except OSError:
+        pass  # already gone, or never existed under this exact name — not fatal
+
+    ctx.send_json(HTTPStatus.OK, {"ok": True})
 
 
 # ---------------------------------------------------------------------------
@@ -1081,6 +1138,12 @@ def redeem_reward(ctx, reward_id):
     if restaurant is None:
         conn.close()
         raise ApiError(404, "Restaurant not found.")
+    if not restaurant["soft_launch_partner"]:
+        conn.close()
+        raise ApiError(
+            400,
+            "Gift cards can only be redeemed at our certified partner restaurants for this soft launch.",
+        )
 
     # First MANUAL_REVIEW_LIMIT redemptions platform-wide are held for a human
     # to approve before the card is issued — the pilot's fraud check. BEGIN
@@ -1482,7 +1545,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/":
-            path = "/index.html"
+            path = "/welcome.html"
         self._serve_from_dir(STATIC_DIR, path.lstrip("/"), allow_index_fallback=True)
 
     def _serve_from_dir(self, base_dir, relative_path, allow_index_fallback):

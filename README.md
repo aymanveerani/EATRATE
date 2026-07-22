@@ -60,24 +60,43 @@ registrar; DNS propagation usually takes a few minutes to a few hours.
 
 ## The core loop (mirrors Beer Buddy)
 
-1. **Camera first.** The home screen (`index.html`) is a friends feed with a "What are you
-   eating?" card pinned at the top, plus a floating camera button in the nav. Both open
+1. **Welcome → sign up.** First-time visitors land on [`welcome.html`](static/welcome.html) (the
+   app's actual root `/`), which asks for email and an optional phone number before handing off to
+   [`signup.html`](static/signup.html) (prefilled) to finish creating the account. Already-logged-in
+   users skip straight to the feed. `phone_number` is stored but not verified — there's no SMS/OTP
+   provider wired up, it's just captured for now.
+2. **Camera first.** The home screen (`index.html`) is a feed with a "What are you eating?" card
+   pinned at the top, plus a floating camera button in the nav. Both open
    [`capture.html`](static/capture.html).
-2. **Snap → tag → share.** Pick/take a photo, type the restaurant (autocompletes against existing
-   ones, or creates a new one on the fly), rate it 0–10, add an optional caption, share.
-3. **Friends-only feed.** `GET /api/feed` only returns posts from the poster and their friends —
-   nobody else sees it. Friends are added by email and are bidirectional (`POST /api/friends`).
-4. **Cheers.** A lightweight reaction (`POST /api/posts/:id/cheer`, toggled, one per user per
+3. **Snap → pick a place → share.** Pick/take a photo, then choose where you ate: a **Home
+   Cooked** option, a restaurant from a live nearby list (same geolocation-backed search as the
+   feed's "Restaurants near you"), or — if location is off or the place isn't listed — type a name
+   manually as a fallback. Rate it 0–10, add an optional caption, share. `POST /api/posts` accepts
+   an exact `restaurant_id` from the picker (preferred) or falls back to the older
+   find-or-create-by-name path for manual entries. "Home Cooked" isn't a schema special case — it's
+   just a real, shared `restaurants` row every home-cooked post points at, created the first time
+   anyone picks it.
+4. **Delete your own posts.** Every post you posted (`renderPostCard` in `index.html`/
+   `restaurant.html`, and every grid photo on `profile.html`) has a 🗑 button — `DELETE
+   /api/posts/:id`, ownership-checked. Deleting removes the row and its photo file, and also
+   deletes any cheers/reports referencing it first (SQLite foreign keys don't cascade here).
+   `users.post_count` is deliberately **not** decremented — it's the lifetime counter driving the
+   "every 5th post" reward trigger, and decrementing it would let someone delete-and-repost to
+   re-trigger the same reward slot.
+5. **Cheers.** A lightweight reaction (`POST /api/posts/:id/cheer`, toggled, one per user per
    post) — the equivalent of Beer Buddy's "Cheers" tap.
-5. **Rewards.** Every 5th post earns a $10 gift card, same mechanic as before, just counting
-   `posts` instead of `reviews` now.
+6. **Rewards.** Every 5th post earns a $10 gift card, redeemable only at certified soft-launch
+   partner restaurants (see below).
 
 ## How the reward works
 
 - `users.post_count` increments on every post.
 - When it hits a multiple of 5, a `rewards` row is created with `status = 'pending'`.
-- The rewards page lets the user redeem a pending reward by picking a restaurant; that calls
-  `POST /api/rewards/:id/redeem`, which issues a gift card code and marks the reward `redeemed`.
+- The rewards page lets the user redeem a pending reward by picking a restaurant — but only from
+  **certified soft-launch partner restaurants** (`GET /api/restaurants?soft_launch_partner=true`),
+  not any restaurant on the platform. `POST /api/rewards/:id/redeem` rejects a `restaurant_id` that
+  isn't a partner with a 400, even if someone bypasses the UI and calls the API directly. If no
+  partners are certified yet, the redeem modal shows that instead of an empty picker.
 - The reward amount ($10) and the trigger count (5) are constants in
   [server/app.py](server/app.py) (`REWARD_EVERY_N_POSTS`, `REWARD_AMOUNT_CENTS`).
 
@@ -225,11 +244,13 @@ Added for the pilot launch, since reviewers are being paid to post:
   reports also show up in the admin panel with a "mark resolved" button.
 - **FTC disclosure.** A persistent banner ([`ftcBanner()`](static/js/api.js)) reading *"Reviews on
   EatRate may be incentivized: every 5th review a user posts earns them a $10 gift card,
-  regardless of the rating given"* appears above the feed (`index.html`) and above every
-  restaurant's post list (`restaurant.html`). The "regardless of rating" phrasing is what keeps
-  the reward compliant with the FTC's Consumer Review Rule — the rule prohibits tying an incentive
-  to the *sentiment* of a review, not incentives themselves, and nothing in this app's reward
-  logic looks at `rating` before granting a reward.
+  redeemable at certain restaurants, regardless of the rating given"* appears above the feed
+  (`index.html`) and above every restaurant's post list (`restaurant.html`). The "regardless of
+  rating" phrasing is what keeps the reward compliant with the FTC's Consumer Review Rule — the
+  rule prohibits tying an incentive to the *sentiment* of a review, not incentives themselves, and
+  nothing in this app's reward logic looks at `rating` before granting a reward. "Redeemable at
+  certain restaurants" reflects the certified-partner redemption restriction above — keep both
+  clauses intact if this copy changes again.
 
 ## Gift card redemption: switched off for now
 
@@ -356,18 +377,20 @@ project root locally, a mounted volume in production — and are gitignored.)
 
 | Method | Path                              | Auth | Notes |
 |--------|-----------------------------------|------|-------|
-| POST   | `/api/signup`                     | –    | `{email, name, password}` |
+| POST   | `/api/signup`                     | –    | `{email, name, password, phone_number?}` |
 | POST   | `/api/login`                      | –    | `{email, password}` |
 | POST   | `/api/logout`                     | ✓    | |
 | GET    | `/api/me`                         | ✓    | |
-| GET    | `/api/restaurants`                | –    | list with avg rating + post count |
+| GET    | `/api/restaurants`                | –    | `?soft_launch_partner=true` to filter to certified partners only; list with avg rating + post count |
 | GET    | `/api/restaurants/:id`            | ✓    | detail + all posts (photo grid) + claim/soft-launch-partner status |
 | GET    | `/api/restaurants/nearby`         | ✓    | `?lat&lng` — real restaurants within 5 miles, nearest first, deduped across sources (Google/Yelp/OSM) |
 | GET    | `/api/restaurants/popular`        | ✓    | `?lat&lng` — top 3 nearby restaurants by post count (ties by rating); same area data as `/nearby`, different ranking |
 | GET    | `/api/restaurants/:id/photo`      | ✓    | Proxies a restaurant's Google Places photo server-side (API key never reaches the client); disk-cached after first fetch |
+| GET    | `/api/restaurants/:id/logo`       | ✓    | Proxies the restaurant's real logo (chain match or scraped from its own site); disk-cached, keyed by domain |
 | POST   | `/api/restaurants/:id/claim`      | ✓    | `{business_name, contact_email}` — 403 unless the restaurant is a soft-launch partner, 409 if already claimed |
 | GET    | `/api/business/dashboard`         | ✓    | stats + weekly trend + AI insights + trial status + photos for every restaurant you've claimed |
-| POST   | `/api/posts`                      | ✓    | `{photo: data-url, restaurant_name, rating: 0-10, caption?}` — restaurant is found-or-created by name; `429` if rate-limited |
+| POST   | `/api/posts`                      | ✓    | `{photo: data-url, restaurant_id \| restaurant_name, rating: 0-10, caption?}` — `restaurant_id` (from the nearby picker) is preferred and exact; `restaurant_name` falls back to find-or-create-by-name for manual entry; `429` if rate-limited |
+| DELETE | `/api/posts/:id`                  | ✓    | Deletes your own post (403 if you're not the author) and its photo file; does not decrement `post_count` |
 | POST   | `/api/posts/:id/cheer`            | ✓    | toggles a cheer; 403 if you're not the author or their friend |
 | POST   | `/api/posts/:id/report`           | ✓    | `{reason?}` — flags a post, notifies the operator |
 | GET    | `/api/feed`                       | ✓    | `?lat&lng` — posts from anyone at restaurants within 5 miles, newest first; falls back to friends-only if no location |
@@ -375,7 +398,7 @@ project root locally, a mounted volume in production — and are gitignored.)
 | POST   | `/api/friends`                    | ✓    | `{email}` — adds bidirectionally |
 | DELETE | `/api/friends/:id`                | ✓    | removes both directions |
 | GET    | `/api/rewards`                    | ✓    | mine, plus `redemption_enabled` — see "Gift card redemption" above |
-| POST   | `/api/rewards/:id/redeem`         | ✓    | `403` unless `REDEMPTION_ENABLED=true`; otherwise `{restaurant_id}` → gift card, or `{under_review: true}` for the first 30 platform-wide |
+| POST   | `/api/rewards/:id/redeem`         | ✓    | `403` unless `REDEMPTION_ENABLED=true`; `400` unless `restaurant_id` is a certified soft-launch partner; otherwise `{restaurant_id}` → gift card, or `{under_review: true}` for the first 30 platform-wide |
 | GET    | `/api/profile`                    | ✓    | my posts + rewards + friend count + progress to next reward |
 | GET    | `/api/admin/restaurants/search`   | admin secret | `?q=` — search restaurants to designate as soft-launch partners |
 | POST   | `/api/admin/restaurants/:id/soft-launch-partner` | admin secret | `{enabled}` — only partners can be claimed |

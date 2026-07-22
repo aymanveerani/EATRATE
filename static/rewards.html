@@ -19,10 +19,13 @@
 
   <div id="modal-backdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:3000;"></div>
   <div id="redeem-modal" style="display:none; position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100%; max-width:430px; background:var(--card); border:1px solid var(--border); border-bottom:none; border-radius:18px 18px 0 0; padding:20px; z-index:3001;">
-    <h3 style="margin-top:0;">Choose a restaurant</h3>
-    <p style="color:var(--muted); font-size:14px; margin-top:-8px;">Your $10 gift card will be issued for this restaurant.</p>
+    <h3 style="margin-top:0;">Choose a certified restaurant</h3>
+    <p style="color:var(--muted); font-size:14px; margin-top:-8px;">Gift cards are only redeemable at our certified soft-launch partner restaurants.</p>
     <div id="modal-error" style="display:none;" class="error-msg"></div>
     <select id="restaurant-select"></select>
+    <div id="no-partners-msg" style="display:none; color:var(--muted); font-size:13px;">
+      No certified restaurants yet — check back once our soft-launch partners are announced.
+    </div>
     <div style="display:flex; gap:8px; margin-top:12px;">
       <button class="secondary" id="cancel-redeem" style="flex:1;">Cancel</button>
       <button class="primary" id="confirm-redeem" style="flex:1;">Redeem</button>
@@ -44,13 +47,26 @@
       activeRewardId = rewardId;
       document.getElementById("modal-error").style.display = "none";
       if (restaurantsCache.length === 0) {
-        const { restaurants } = await api.get("/api/restaurants");
+        // Only certified soft-launch partner restaurants — redemption is
+        // restricted to these, not every restaurant on the platform.
+        const { restaurants } = await api.get("/api/restaurants?soft_launch_partner=true");
         restaurantsCache = restaurants;
       }
       const select = document.getElementById("restaurant-select");
-      select.innerHTML = restaurantsCache
-        .map((r) => `<option value="${r.id}">${escapeHtml(r.name)}</option>`)
-        .join("");
+      const confirmBtn = document.getElementById("confirm-redeem");
+      const noPartnersMsg = document.getElementById("no-partners-msg");
+      if (restaurantsCache.length === 0) {
+        select.style.display = "none";
+        noPartnersMsg.style.display = "block";
+        confirmBtn.disabled = true;
+      } else {
+        select.style.display = "";
+        noPartnersMsg.style.display = "none";
+        confirmBtn.disabled = false;
+        select.innerHTML = restaurantsCache
+          .map((r) => `<option value="${r.id}">${escapeHtml(r.name)}</option>`)
+          .join("");
+      }
       document.getElementById("modal-backdrop").style.display = "block";
       document.getElementById("redeem-modal").style.display = "block";
     }

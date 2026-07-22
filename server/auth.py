@@ -24,11 +24,11 @@ def verify_password(password: str, salt: str, expected_hash: str) -> bool:
     return hmac.compare_digest(computed, expected_hash)
 
 
-def create_user(conn, email: str, name: str, password: str):
+def create_user(conn, email: str, name: str, password: str, phone_number: str = ""):
     password_hash, salt = hash_password(password)
     cur = conn.execute(
-        "INSERT INTO users (email, name, password_hash, password_salt) VALUES (?, ?, ?, ?)",
-        (email.strip().lower(), name.strip(), password_hash, salt),
+        "INSERT INTO users (email, name, password_hash, password_salt, phone_number) VALUES (?, ?, ?, ?, ?)",
+        (email.strip().lower(), name.strip(), password_hash, salt, phone_number.strip()),
     )
     conn.commit()
     return cur.lastrowid

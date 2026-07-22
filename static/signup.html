@@ -29,6 +29,10 @@
             <input type="email" id="email" required autocomplete="email" />
           </div>
           <div>
+            <label for="phone">Phone number <span style="color:var(--muted); font-weight:400;">(optional)</span></label>
+            <input type="tel" id="phone" autocomplete="tel" placeholder="(555) 555-5555" />
+          </div>
+          <div>
             <label for="password">Password</label>
             <input type="password" id="password" required minlength="6" autocomplete="new-password" />
           </div>
@@ -47,6 +51,10 @@
       } catch (e) {}
     })();
 
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("email")) document.getElementById("email").value = params.get("email");
+    if (params.get("phone")) document.getElementById("phone").value = params.get("phone");
+
     const form = document.getElementById("signup-form");
     const errorBox = document.getElementById("error");
     const submitBtn = document.getElementById("submit-btn");
@@ -60,6 +68,7 @@
         await api.post("/api/signup", {
           name: document.getElementById("name").value,
           email: document.getElementById("email").value,
+          phone_number: document.getElementById("phone").value,
           password: document.getElementById("password").value,
         });
         window.location.href = "/index.html";

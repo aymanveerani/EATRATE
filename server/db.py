@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS users (
     name TEXT NOT NULL,
     password_hash TEXT NOT NULL,
     password_salt TEXT NOT NULL,
+    phone_number TEXT NOT NULL DEFAULT '',
     post_count INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -132,6 +133,7 @@ CREATE TABLE IF NOT EXISTS reports (
 # EXISTS won't retrofit these onto an existing eatrate.db, so migrate
 # explicitly and ignore "duplicate column" if it's already been applied.
 MIGRATIONS = [
+    "ALTER TABLE users ADD COLUMN phone_number TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE rewards ADD COLUMN manual_review_required INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE rewards ADD COLUMN manual_review_status TEXT",
     "ALTER TABLE restaurants ADD COLUMN lat REAL",

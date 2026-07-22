@@ -53,6 +53,7 @@ function escapeHtml(str) {
 async function requireAuth() {
   try {
     const { user } = await api.get("/api/me");
+    window.currentUser = user; // lets renderPostCard show a delete button only on the viewer's own posts
     return user;
   } catch (e) {
     window.location.href = "/login.html";
@@ -83,6 +84,7 @@ function renderTabbar(active) {
 }
 
 function renderPostCard(post) {
+  const isMine = window.currentUser && post.user_id === window.currentUser.id;
   return `
     <div class="card post-card" data-post-id="${post.id}">
       <img class="post-photo" src="${post.photo_url}" loading="lazy" />
@@ -96,7 +98,10 @@ function renderPostCard(post) {
               </a>
             </div>
           </div>
-          <div class="rating-pill">${post.rating}/10</div>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <div class="rating-pill">${post.rating}/10</div>
+            ${isMine ? `<button class="delete-post-btn" data-delete-post-id="${post.id}" title="Delete this post">🗑</button>` : ""}
+          </div>
         </div>
         ${post.caption ? `<div class="post-caption">${escapeHtml(post.caption)}</div>` : ""}
         <div class="post-foot">
@@ -110,6 +115,24 @@ function renderPostCard(post) {
         </div>
       </div>
     </div>`;
+}
+
+function wireDeleteButtons(container) {
+  container.addEventListener("click", async (e) => {
+    const btn = e.target.closest(".delete-post-btn");
+    if (!btn) return;
+    if (!confirm("Delete this post? This can't be undone.")) return;
+    const postId = btn.dataset.deletePostId;
+    btn.disabled = true;
+    try {
+      await api.del(`/api/posts/${postId}`);
+      const card = container.querySelector(`[data-post-id="${postId}"]`);
+      if (card) card.remove();
+    } catch (err) {
+      alert(err.message);
+      btn.disabled = false;
+    }
+  });
 }
 
 const CUISINE_ICONS = {
@@ -245,10 +268,13 @@ function wireCheerButtons(container) {
 }
 
 function ftcBanner() {
+  // "regardless of the rating given" is load-bearing for FTC Consumer
+  // Review Rule compliance — it ties the disclosure to the incentive
+  // being sentiment-independent. Keep it intact when editing this copy.
   return `
     <div class="ftc-banner">
       ⚠️ Reviews on EatRate may be incentivized: every 5th review a user posts earns them a
-      $10 gift card, regardless of the rating given.
+      $10 gift card, redeemable at certain restaurants, regardless of the rating given.
     </div>`;
 }
 

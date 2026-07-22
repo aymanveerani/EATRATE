@@ -385,6 +385,43 @@ nav.tabbar .icon { font-size: 20px; }
 
 .capture-sub { color: var(--muted); font-size: 14px; }
 
+.restaurant-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--card-2);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  margin-bottom: 6px;
+}
+
+.restaurant-option.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.restaurant-option-icon { font-size: 18px; flex-shrink: 0; }
+
+.restaurant-option-name { display: block; }
+
+.restaurant-option-meta {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  text-transform: capitalize;
+}
+
+.restaurant-option.selected .restaurant-option-meta { color: var(--accent); opacity: 0.8; }
+
 .fab {
   position: fixed;
   bottom: 20px;
@@ -644,6 +681,25 @@ nav.tabbar .icon { font-size: 20px; }
   object-fit: cover;
   border-radius: 6px;
   background: var(--card-2);
+}
+
+.photo-grid-item { position: relative; display: block; }
+
+.photo-grid-item .delete-post-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.65);
+  color: white;
+  border: none;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
 }
 
 .friend-row {

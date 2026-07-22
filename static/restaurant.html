@@ -49,7 +49,7 @@
           ${claimHtml}
         </div>
 
-        <a href="/capture.html?restaurant=${encodeURIComponent(restaurant.name)}" class="card primary" style="display:block; text-align:center; text-decoration:none; background:var(--accent); color:white; font-weight:700;">
+        <a href="/capture.html?restaurant_id=${restaurant.id}&restaurant_name=${encodeURIComponent(restaurant.name)}" class="card primary" style="display:block; text-align:center; text-decoration:none; background:var(--accent); color:white; font-weight:700;">
           📸 Share your visit
         </a>
 
@@ -59,6 +59,7 @@
       `;
 
       wireCheerButtons(document.getElementById("content"));
+      wireDeleteButtons(document.getElementById("content"));
       initReportModal(document.getElementById("content"));
     }
 

@@ -36,7 +36,14 @@
 
         const gridHtml = profile.posts.length
           ? `<div class="photo-grid">${profile.posts
-              .map((p) => `<a href="/restaurant.html?id=${p.restaurant_id}"><img src="${p.photo_url}" loading="lazy" /></a>`)
+              .map(
+                (p) => `
+                  <div class="photo-grid-item" data-post-id="${p.id}">
+                    <a href="/restaurant.html?id=${p.restaurant_id}"><img src="${p.photo_url}" loading="lazy" /></a>
+                    <button class="delete-post-btn" data-delete-post-id="${p.id}" title="Delete this post">🗑</button>
+                  </div>
+                `
+              )
               .join("")}</div>`
           : `<div class="empty-state">No posts yet. Tap the camera button to share your first bite.</div>`;
 
@@ -63,6 +70,7 @@
             </div>
           </a>
         `;
+        wireDeleteButtons(document.getElementById("content"));
       } catch (e) {
         document.getElementById("content").textContent = "Failed to load profile.";
       }
