@@ -161,8 +161,17 @@ function cuisineIcon(cuisine) {
 //   4. The cuisine icon, last resort.
 function nearbyImageCandidates(r) {
   const candidates = [];
+  // Always try our own /logo endpoint, even if this restaurant has no
+  // website_domain on file — the server can still resolve a domain via
+  // its curated chain list (server/chain_logos.py) purely from the name,
+  // independent of whatever (if anything) the data source returned for
+  // its website. Gating this on website_domain meant a known chain like
+  // Domino's showed no logo at all whenever the specific franchise
+  // location Google/Yelp returned happened to have no website on file —
+  // the client just never asked. The endpoint 404s fast if there's truly
+  // nothing to resolve, so this is always safe to attempt.
+  candidates.push({ cls: "logo", src: `/api/restaurants/${r.id}/logo` });
   if (r.website_domain) {
-    candidates.push({ cls: "logo", src: `/api/restaurants/${r.id}/logo` });
     candidates.push({
       cls: "logo",
       src: `https://www.google.com/s2/favicons?domain=${encodeURIComponent(r.website_domain)}&sz=128`,
